@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./recipes.db:/app/recipes.db
+    restart: always
+
+# Note: Ensure you have a Dockerfile that builds the app
+# and starts the server.
