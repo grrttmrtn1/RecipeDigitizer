@@ -18,7 +18,9 @@ import {
   Lock,
   User,
   Shield,
-  Eye
+  Eye,
+  CheckCircle,
+  AlertCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, RecipeData } from "./services/gemini";
@@ -62,6 +64,10 @@ export default function App() {
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [newPasswordValue, setNewPasswordValue] = useState('');
   const [passwordChangeError, setPasswordChangeError] = useState('');
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState('');
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsSuccess, setSettingsSuccess] = useState('');
+  const [mealieStatus, setMealieStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
   // Mealie Config (now persistent on server)
   const [mealieUrl, setMealieUrl] = useState('');
@@ -81,7 +87,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) {
+    if (user && user.require_password_change !== 1) {
       fetchLibrary();
       fetchSettings();
     }
@@ -179,6 +185,7 @@ export default function App() {
   const handlePasswordChange = async (e: FormEvent) => {
     e.preventDefault();
     setPasswordChangeError('');
+    setPasswordChangeSuccess('');
     try {
       const res = await fetch('/api/auth/change-password', {
         method: 'POST',
@@ -189,8 +196,9 @@ export default function App() {
       console.log(`Password change response status: ${res.status}`);
       if (res.ok) {
         setShowPasswordChange(false);
+        setNewPasswordValue('');
         setUser(prev => prev ? { ...prev, require_password_change: 0 } : null);
-        alert("Password changed successfully");
+        setPasswordChangeSuccess("Password changed successfully");
       } else {
         const data = await res.json();
         setPasswordChangeError(data.error || "Failed to change password");
@@ -225,6 +233,8 @@ export default function App() {
   };
 
   const saveSettings = async () => {
+    setSettingsError('');
+    setSettingsSuccess('');
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -239,14 +249,14 @@ export default function App() {
         credentials: 'include'
       });
       if (res.ok) {
-        alert("Settings saved successfully");
+        setSettingsSuccess("Settings saved successfully");
         fetchPasswordRequirements();
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to save settings");
+        setSettingsError(data.error || "Failed to save settings");
       }
     } catch (err) {
-      alert("Failed to save settings");
+      setSettingsError("Failed to save settings");
     }
   };
 
@@ -342,8 +352,9 @@ export default function App() {
   };
 
   const submitToMealie = async (recipe: RecipeData) => {
+    setMealieStatus(null);
     if (!mealieUrl || !mealieToken) {
-      alert("Please configure Mealie settings first.");
+      setMealieStatus({ type: 'error', message: "Please configure Mealie settings first." });
       setActiveTab('settings');
       return;
     }
@@ -361,12 +372,12 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        alert("Successfully submitted to Mealie!");
+        setMealieStatus({ type: 'success', message: "Successfully submitted to Mealie!" });
       } else {
-        alert(`Mealie error: ${data.error || 'Unknown error'}`);
+        setMealieStatus({ type: 'error', message: `Mealie error: ${data.error || 'Unknown error'}` });
       }
     } catch (err) {
-      alert("Failed to connect to Mealie server.");
+      setMealieStatus({ type: 'error', message: "Failed to connect to Mealie server." });
     }
   };
 
@@ -481,7 +492,7 @@ export default function App() {
             </button>
           </form>
           <div className="mt-8 pt-6 border-t border-stone-100 text-center">
-            <p className="text-xs text-stone-400">Default credentials: admin / admin123</p>
+            <p className="text-xs text-stone-400">Default credentials: admin / Admin@12345</p>
           </div>
         </motion.div>
       </div>
@@ -516,6 +527,21 @@ export default function App() {
       </nav>
 
       <main className="pt-24 pb-12 max-w-6xl mx-auto px-4">
+        {mealieStatus && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`mb-6 p-4 rounded-2xl flex items-center justify-between ${mealieStatus.type === 'success' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}
+          >
+            <div className="flex items-center gap-2">
+              {mealieStatus.type === 'success' ? <CheckCircle size={18} /> : <AlertCircle size={18} />}
+              <span className="text-sm font-medium">{mealieStatus.message}</span>
+            </div>
+            <button onClick={() => setMealieStatus(null)} className="p-1 hover:bg-black/5 rounded-full">
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
         <AnimatePresence mode="wait">
           {activeTab === 'upload' && (
             <motion.div 
@@ -795,6 +821,20 @@ export default function App() {
                   )}
                 </div>
 
+                {settingsError && (
+                  <div className="p-4 bg-red-50 border border-red-100 rounded-2xl text-red-600 text-sm flex items-center gap-2">
+                    <AlertCircle size={18} />
+                    {settingsError}
+                  </div>
+                )}
+
+                {settingsSuccess && (
+                  <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl text-emerald-600 text-sm flex items-center gap-2">
+                    <CheckCircle size={18} />
+                    {settingsSuccess}
+                  </div>
+                )}
+
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-stone-700">Mealie URL</label>
@@ -819,6 +859,44 @@ export default function App() {
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-8">
+                <div>
+                  <h2 className="text-2xl font-medium mb-2">Account Security</h2>
+                  <p className="text-stone-500 text-sm">Update your account password. Ensure it meets the complexity requirements.</p>
+                </div>
+                <form onSubmit={handlePasswordChange} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-stone-700">New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
+                      <input 
+                        type="password" 
+                        required
+                        value={newPasswordValue}
+                        onChange={(e) => setNewPasswordValue(e.target.value)}
+                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                        placeholder="New Password"
+                      />
+                    </div>
+                    {passwordReqs && (
+                      <div className="text-[10px] text-stone-400 space-y-0.5 px-1">
+                        <p>• Minimum {passwordReqs.passwordMinLength} characters</p>
+                        {passwordReqs.passwordRequireNumber === "1" && <p>• At least one number</p>}
+                        {passwordReqs.passwordRequireSpecial === "1" && <p>• At least one special character</p>}
+                      </div>
+                    )}
+                  </div>
+                  {passwordChangeError && <p className="text-red-500 text-sm">{passwordChangeError}</p>}
+                  {passwordChangeSuccess && <p className="text-emerald-600 text-sm font-medium">{passwordChangeSuccess}</p>}
+                  <button 
+                    type="submit"
+                    className="px-6 py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors shadow-lg"
+                  >
+                    Update Password
+                  </button>
+                </form>
               </div>
 
               {user.role === 'admin' && (
@@ -883,7 +961,7 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
             >
-              <AdminPanel />
+              <AdminPanel passwordReqs={passwordReqs} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -1016,9 +1094,11 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
   );
 }
 
-function AdminPanel() {
+function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminSuccess, setAdminSuccess] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -1064,6 +1144,8 @@ function AdminPanel() {
 
   const handleAddUser = async (e: FormEvent) => {
     e.preventDefault();
+    setAdminError(null);
+    setAdminSuccess(null);
     const res = await fetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1080,14 +1162,17 @@ function AdminPanel() {
       setIsAdding(false);
       setNewUsername('');
       setNewPassword('');
+      setAdminSuccess("User created successfully");
     } else {
       const data = await res.json();
-      alert(data.error);
+      setAdminError(data.error);
     }
   };
 
   const handleDeleteUser = async (id: string) => {
     if (!confirm("Delete this user?")) return;
+    setAdminError(null);
+    setAdminSuccess(null);
     const res = await fetch(`/api/admin/users/${id}`, { method: 'DELETE', credentials: 'include' });
     if (res.ok) {
       const data = await res.json();
@@ -1095,10 +1180,11 @@ function AdminPanel() {
         window.location.reload();
       } else {
         fetchUsers();
+        setAdminSuccess("User deleted successfully");
       }
     } else {
       const data = await res.json();
-      alert(data.error || "Delete failed");
+      setAdminError(data.error || "Delete failed");
     }
   };
 
@@ -1114,6 +1200,8 @@ function AdminPanel() {
   const handleUpdateUser = async (e: FormEvent) => {
     e.preventDefault();
     if (!editingUserId) return;
+    setAdminError(null);
+    setAdminSuccess(null);
 
     const res = await fetch(`/api/admin/users/${editingUserId}`, {
       method: 'PUT',
@@ -1131,9 +1219,10 @@ function AdminPanel() {
     if (res.ok) {
       setEditingUserId(null);
       fetchUsers();
+      setAdminSuccess("User updated successfully");
     } else {
       const data = await res.json();
-      alert(data.error || "Update failed");
+      setAdminError(data.error || "Update failed");
     }
   };
 
@@ -1142,12 +1231,37 @@ function AdminPanel() {
       <div className="flex items-center justify-between">
         <h2 className="text-3xl font-serif font-medium">User Administration</h2>
         <button 
-          onClick={() => setIsAdding(true)}
+          onClick={() => {
+            setIsAdding(true);
+            setAdminError(null);
+          }}
           className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 transition-colors flex items-center gap-2"
         >
           <Plus size={16} /> Add User
         </button>
       </div>
+
+      {adminError && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-red-50 border border-red-100 rounded-2xl text-red-600 text-sm flex items-center gap-2"
+        >
+          <AlertCircle size={18} />
+          {adminError}
+        </motion.div>
+      )}
+
+      {adminSuccess && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl text-emerald-600 text-sm flex items-center gap-2"
+        >
+          <CheckCircle size={18} />
+          {adminSuccess}
+        </motion.div>
+      )}
 
       {isAdding && (
         <motion.div 
@@ -1166,7 +1280,7 @@ function AdminPanel() {
                 className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
               />
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1 relative">
               <label className="text-xs font-bold text-stone-400 uppercase">Password</label>
               <input 
                 type="password" 
@@ -1175,6 +1289,13 @@ function AdminPanel() {
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
               />
+              {passwordReqs && (
+                <div className="absolute top-full left-0 z-10 bg-white p-2 rounded-lg border border-stone-200 shadow-lg text-[9px] text-stone-400 space-y-0 leading-tight mt-1 min-w-[120px]">
+                  <p>• Min {passwordReqs.passwordMinLength} chars</p>
+                  {passwordReqs.passwordRequireNumber === "1" && <p>• One number</p>}
+                  {passwordReqs.passwordRequireSpecial === "1" && <p>• One special char</p>}
+                </div>
+              )}
             </div>
             <div className="space-y-1">
               <label className="text-xs font-bold text-stone-400 uppercase">Role</label>
@@ -1212,7 +1333,7 @@ function AdminPanel() {
               <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">User</th>
               <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Role</th>
               <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Mealie Access</th>
-              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Pass Change</th>
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Password Change</th>
               <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Actions</th>
             </tr>
           </thead>
@@ -1280,7 +1401,7 @@ function AdminPanel() {
                 </td>
                 <td className="px-6 py-4">
                   {editingUserId === u.id ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 relative">
                       <input 
                         type="password"
                         placeholder="New Password"
@@ -1288,6 +1409,13 @@ function AdminPanel() {
                         onChange={(e) => setEditPassword(e.target.value)}
                         className="px-2 py-1 border border-stone-200 rounded text-sm w-32"
                       />
+                      {passwordReqs && editPassword && (
+                        <div className="absolute bottom-full left-0 z-20 bg-white p-2 rounded-lg border border-stone-200 shadow-lg text-[9px] text-stone-400 space-y-0 leading-tight mb-2 min-w-[120px]">
+                          <p>• Min {passwordReqs.passwordMinLength} chars</p>
+                          {passwordReqs.passwordRequireNumber === "1" && <p>• One number</p>}
+                          {passwordReqs.passwordRequireSpecial === "1" && <p>• One special char</p>}
+                        </div>
+                      )}
                       <button onClick={handleUpdateUser} className="text-emerald-600 hover:text-emerald-700 font-medium text-sm">Save</button>
                       <button onClick={() => setEditingUserId(null)} className="text-stone-400 hover:text-stone-600 font-medium text-sm">Cancel</button>
                     </div>

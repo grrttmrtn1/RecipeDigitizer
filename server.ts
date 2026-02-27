@@ -148,13 +148,18 @@ initSettings.run("passwordRequireNumber", "1");
 // Create default admin if not exists
 const adminExists = db.prepare("SELECT * FROM users WHERE role = 'admin'").get();
 if (!adminExists) {
-  const hashedPassword = bcrypt.hashSync("admin123", 10);
+  const hashedPassword = bcrypt.hashSync("Admin@12345", 10);
   db.prepare("INSERT INTO users (id, username, password, role, can_edit_mealie, require_password_change) VALUES (?, ?, ?, ?, ?, ?)").run(randomUUID(), "admin", hashedPassword, "admin", 1, 1);
+  console.log("[DB] Created default admin user with password: Admin@12345");
 } else {
   const adminUser: any = db.prepare("SELECT * FROM users WHERE username = 'admin'").get();
-  console.log(`[DB] Admin user ID: ${adminUser?.id}, role: ${adminUser?.role}`);
-  if (adminUser && bcrypt.compareSync("admin123", adminUser.password)) {
-    db.prepare("UPDATE users SET require_password_change = 1 WHERE username = 'admin'").run();
+  if (adminUser) {
+    // If password is the old default 'admin123' or 'admin', reset it to 'Admin@12345' to meet complexity requirements
+    if (bcrypt.compareSync("admin123", adminUser.password) || bcrypt.compareSync("admin", adminUser.password)) {
+      const newHashed = bcrypt.hashSync("Admin@12345", 10);
+      db.prepare("UPDATE users SET password = ?, require_password_change = 1 WHERE username = 'admin'").run(newHashed);
+      console.log("[DB] Admin password reset to Admin@12345 to meet complexity requirements.");
+    }
   }
 }
 
@@ -197,8 +202,7 @@ async function startServer() {
       secure: true,
       httpOnly: true,
       sameSite: 'none',
-      maxAge: 24 * 60 * 60 * 1000,
-      proxy: true
+      maxAge: 24 * 60 * 60 * 1000
     }
   }));
 
@@ -264,7 +268,9 @@ async function startServer() {
     const { username, password } = req.body;
     console.log(`[AUTH] Login attempt for: ${username}`);
     const user: any = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
-    if (user && bcrypt.compareSync(password, user.password)) {
+    const passwordMatch = user && bcrypt.compareSync(password, user.password);
+    
+    if (passwordMatch) {
       console.log(`[AUTH] Password match for ${username}. Setting session...`);
       req.session.userId = user.id;
       req.session.username = user.username;
@@ -285,7 +291,7 @@ async function startServer() {
         });
       });
     } else {
-      console.log(`Login failed for: ${username}`);
+      console.log(`[AUTH] Login failed for: ${username}. User found: ${!!user}, Password match: false`);
       res.status(401).json({ error: "Invalid credentials" });
     }
   });
@@ -358,6 +364,9 @@ async function startServer() {
     const { username, role, can_edit_mealie, password, require_password_change } = req.body;
     try {
       if (password) {
+        const error = validatePassword(password);
+        if (error) return res.status(400).json({ error });
+        
         const hashedPassword = bcrypt.hashSync(password, 10);
         db.prepare("UPDATE users SET username = ?, role = ?, can_edit_mealie = ?, password = ?, require_password_change = ? WHERE id = ?")
           .run(username, role, can_edit_mealie ? 1 : 0, hashedPassword, require_password_change ? 1 : 0, req.params.id);
