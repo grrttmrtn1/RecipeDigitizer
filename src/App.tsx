@@ -186,6 +186,7 @@ export default function App() {
         body: JSON.stringify({ password: newPasswordValue }),
         credentials: 'include'
       });
+      console.log(`Password change response status: ${res.status}`);
       if (res.ok) {
         setShowPasswordChange(false);
         setUser(prev => prev ? { ...prev, require_password_change: 0 } : null);

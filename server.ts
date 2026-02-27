@@ -30,6 +30,7 @@ const __dirname = path.dirname(__filename);
 const db = new Database("recipes.db");
 
 // Initialize database
+console.log("Initializing database...");
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -60,12 +61,77 @@ db.exec(`
   );
 `);
 
-// Migration: Add require_password_change if it doesn't exist
+// Migration: Check if id column is INTEGER (old schema)
+const tableInfo = db.prepare("PRAGMA table_info(users)").all();
+const idColumn: any = tableInfo.find((c: any) => c.name === 'id');
+if (idColumn && idColumn.type.toUpperCase() === 'INTEGER') {
+  console.log("Migrating users table from INTEGER to TEXT IDs...");
+  db.transaction(() => {
+    // Rename old tables
+    db.exec("ALTER TABLE users RENAME TO users_old");
+    db.exec("ALTER TABLE recipes RENAME TO recipes_old");
+
+    // Create new tables with TEXT IDs
+    db.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT DEFAULT 'user',
+        can_edit_mealie INTEGER DEFAULT 0,
+        require_password_change INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE recipes (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        name TEXT NOT NULL,
+        description TEXT,
+        ingredients TEXT,
+        instructions TEXT,
+        image_data TEXT,
+        mime_type TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+      );
+    `);
+
+    // Migrate data
+    const oldUsers = db.prepare("SELECT * FROM users_old").all();
+    const idMap = new Map();
+
+    for (const u of oldUsers as any[]) {
+      const newId = randomUUID();
+      idMap.set(u.id, newId);
+      db.prepare(`
+        INSERT INTO users (id, username, password, role, can_edit_mealie, require_password_change, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(newId, u.username, u.password, u.role, u.can_edit_mealie, u.require_password_change, u.created_at);
+    }
+
+    const oldRecipes = db.prepare("SELECT * FROM recipes_old").all();
+    for (const r of oldRecipes as any[]) {
+      const newId = randomUUID();
+      const newUserId = idMap.get(r.user_id);
+      db.prepare(`
+        INSERT INTO recipes (id, user_id, name, description, ingredients, instructions, image_data, mime_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(newId, newUserId, r.name, r.description, r.ingredients, r.instructions, r.image_data, r.mime_type, r.created_at);
+    }
+
+    // Drop old tables
+    db.exec("DROP TABLE users_old");
+    db.exec("DROP TABLE recipes_old");
+  })();
+  console.log("Migration completed.");
+}
+
+// Migration: Add require_password_change if it doesn't exist (for cases where table was already TEXT but missing column)
 try {
   db.prepare("ALTER TABLE users ADD COLUMN require_password_change INTEGER DEFAULT 0").run();
 } catch (e) {}
 
-// Migration: Ensure all users have GUIDs
+// Migration: Ensure all users have GUIDs (fallback for any missed ones)
 const usersWithoutGuid = db.prepare("SELECT id FROM users WHERE typeof(id) != 'text' OR length(id) < 30").all();
 for (const u of usersWithoutGuid as any[]) {
   const newId = randomUUID();
@@ -86,6 +152,7 @@ if (!adminExists) {
   db.prepare("INSERT INTO users (id, username, password, role, can_edit_mealie, require_password_change) VALUES (?, ?, ?, ?, ?, ?)").run(randomUUID(), "admin", hashedPassword, "admin", 1, 1);
 } else {
   const adminUser: any = db.prepare("SELECT * FROM users WHERE username = 'admin'").get();
+  console.log(`[DB] Admin user ID: ${adminUser?.id}, role: ${adminUser?.role}`);
   if (adminUser && bcrypt.compareSync("admin123", adminUser.password)) {
     db.prepare("UPDATE users SET require_password_change = 1 WHERE username = 'admin'").run();
   }
@@ -99,25 +166,47 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
   app.set('trust proxy', true);
+  app.use((req, res, next) => {
+    // Force https for session cookie security in the AI Studio iframe environment
+    req.headers['x-forwarded-proto'] = 'https';
+    
+    const proto = req.headers['x-forwarded-proto'] || req.protocol;
+    console.log(`[DEBUG] Request: ${req.method} ${req.path}`);
+    console.log(`[DEBUG] Protocol: ${proto}, Secure: ${req.secure}, Host: ${req.headers.host}`);
+    console.log(`[DEBUG] Derived Secure: ${req.secure}`);
+    
+    const oldWriteHead = res.writeHead;
+    res.writeHead = function(statusCode: number, ...args: any[]) {
+      const setCookie = res.getHeader('Set-Cookie');
+      if (setCookie) {
+        console.log(`[DEBUG] Outgoing Set-Cookie: ${setCookie}`);
+      }
+      return oldWriteHead.apply(this, [statusCode, ...args]);
+    };
+    next();
+  });
+
   app.use(session({
     store: new SQLiteStore({ db: "sessions.db", dir: "." }) as any,
     secret: process.env.SESSION_SECRET || "recipe-digitizer-secret",
     resave: false,
     saveUninitialized: false,
     rolling: true,
-    name: 'recipe.sid',
+    name: 'recipe_session',
     cookie: { 
       secure: true,
       httpOnly: true,
       sameSite: 'none',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      maxAge: 24 * 60 * 60 * 1000,
+      proxy: true
     }
   }));
 
   // Auth Middleware
   const isAuthenticated = (req: any, res: any, next: any) => {
-    console.log(`Checking auth for ${req.path}. SessionID: ${req.sessionID}, userId: ${req.session.userId}`);
-    if (req.session.userId) return next();
+    console.log(`[AUTH] Path: ${req.path}, Method: ${req.method}, SessionID: ${req.sessionID}, userId: ${req.session.userId}, Cookie: ${req.headers.cookie}`);
+    if (req.session && req.session.userId) return next();
+    console.log(`[AUTH] Unauthorized! Session keys: ${req.session ? Object.keys(req.session) : 'no session'}`);
     res.status(401).json({ error: "Unauthorized" });
   };
 
@@ -130,6 +219,7 @@ async function startServer() {
     if (!req.session.userId) return next();
     const user: any = db.prepare("SELECT require_password_change FROM users WHERE id = ?").get(req.session.userId);
     const path = req.path.replace(/\/$/, "");
+    console.log(`[AUTH] checkPasswordChange: path=${path}, require_password_change=${user?.require_password_change}`);
     if (user?.require_password_change === 1 && path !== '/api/auth/change-password' && path !== '/api/auth/me' && path !== '/api/auth/logout') {
       return res.status(403).json({ error: "Password change required" });
     }
@@ -155,22 +245,37 @@ async function startServer() {
 
   app.use(checkPasswordChange);
 
+  app.get("/api/debug/admin", (req, res) => {
+    const user = db.prepare("SELECT * FROM users WHERE username = 'admin'").get();
+    res.json(user);
+  });
+
+  app.get("/api/debug/session", (req: any, res) => {
+    res.json({
+      sessionID: req.sessionID,
+      userId: req.session.userId,
+      role: req.session.role,
+      cookie: req.session.cookie
+    });
+  });
+
   // Auth Routes
   app.post("/api/auth/login", (req, res) => {
     const { username, password } = req.body;
-    console.log(`Login attempt for: ${username}`);
+    console.log(`[AUTH] Login attempt for: ${username}`);
     const user: any = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
     if (user && bcrypt.compareSync(password, user.password)) {
+      console.log(`[AUTH] Password match for ${username}. Setting session...`);
       req.session.userId = user.id;
       req.session.username = user.username;
       req.session.role = user.role;
       
       req.session.save((err) => {
         if (err) {
-          console.error("Session save error:", err);
+          console.error("[AUTH] Session save error:", err);
           return res.status(500).json({ error: "Session save failed" });
         }
-        console.log(`Login successful for: ${username}, userId: ${user.id}, role: ${user.role}. Session saved.`);
+        console.log(`[AUTH] Login successful for: ${username}, userId: ${user.id}, role: ${user.role}. SessionID: ${req.sessionID}`);
         res.json({ 
           id: user.id, 
           username: user.username, 
@@ -192,6 +297,7 @@ async function startServer() {
   });
 
   app.get("/api/auth/me", (req: any, res) => {
+    console.log(`[AUTH] GET /me - SessionID: ${req.sessionID}, userId: ${req.session.userId}`);
     if (req.session.userId) {
       const user: any = db.prepare("SELECT id, username, role, can_edit_mealie, require_password_change FROM users WHERE id = ?").get(req.session.userId);
       res.json(user);
@@ -201,13 +307,21 @@ async function startServer() {
   });
 
   app.post("/api/auth/change-password", isAuthenticated, (req: any, res) => {
+    console.log(`[AUTH] Change password request for userId: ${req.session.userId}`);
     const { password } = req.body;
     const error = validatePassword(password);
     if (error) return res.status(400).json({ error });
 
     const hashedPassword = bcrypt.hashSync(password, 10);
     db.prepare("UPDATE users SET password = ?, require_password_change = 0 WHERE id = ?").run(hashedPassword, req.session.userId);
-    res.json({ success: true });
+    
+    req.session.save((err: any) => {
+      if (err) {
+        console.error("Session save error after password change:", err);
+        return res.status(500).json({ error: "Session save failed" });
+      }
+      res.json({ success: true });
+    });
   });
 
   app.get("/api/auth/password-requirements", (req, res) => {
