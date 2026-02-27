@@ -1,0 +1,5 @@
+{
+  "name": "Recipe Digitizer",
+  "description": "Digitize handwritten recipes using Gemini AI OCR, manage them in a library, and export to Mealie.",
+  "requestFramePermissions": []
+}

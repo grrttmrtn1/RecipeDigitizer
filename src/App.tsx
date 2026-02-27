@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, ReactNode } from "react";
+import { useState, useEffect, useRef, ReactNode, FormEvent } from "react";
 import { 
   Upload, 
   BookOpen, 
@@ -12,13 +12,27 @@ import {
   Plus,
   X,
   FileText,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Users,
+  LogOut,
+  Lock,
+  User,
+  Shield,
+  Eye
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, RecipeData } from "./services/gemini";
 
+interface UserProfile {
+  id: string;
+  username: string;
+  role: 'admin' | 'user' | 'readonly';
+  can_edit_mealie: number;
+  require_password_change: number;
+}
+
 interface SavedRecipe extends RecipeData {
-  id: number;
+  id: string;
   image_data?: string;
   mime_type?: string;
   created_at: string;
@@ -33,42 +47,205 @@ interface PendingUpload {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin'>('upload');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [library, setLibrary] = useState<SavedRecipe[]>([]);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
   
-  // Mealie Config
-  const [mealieUrl, setMealieUrl] = useState(localStorage.getItem('mealieUrl') || '');
-  const [mealieToken, setMealieToken] = useState(localStorage.getItem('mealieToken') || '');
+  // Auth State
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [isAuthenticating, setIsAuthenticating] = useState(true);
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [newPasswordValue, setNewPasswordValue] = useState('');
+  const [passwordChangeError, setPasswordChangeError] = useState('');
+
+  // Mealie Config (now persistent on server)
+  const [mealieUrl, setMealieUrl] = useState('');
+  const [mealieToken, setMealieToken] = useState('');
+
+  // Password Complexity Settings
+  const [passwordMinLength, setPasswordMinLength] = useState(10);
+  const [passwordRequireSpecial, setPasswordRequireSpecial] = useState(true);
+  const [passwordRequireNumber, setPasswordRequireNumber] = useState(true);
+  const [passwordReqs, setPasswordReqs] = useState<any>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    localStorage.setItem('mealieUrl', mealieUrl);
-    localStorage.setItem('mealieToken', mealieToken);
-  }, [mealieUrl, mealieToken]);
+    checkAuth();
+  }, []);
 
   useEffect(() => {
-    fetchLibrary();
-  }, []);
+    if (user) {
+      fetchLibrary();
+      fetchSettings();
+    }
+    fetchPasswordRequirements();
+  }, [user]);
+
+  const fetchPasswordRequirements = async () => {
+    try {
+      const res = await fetch('/api/auth/password-requirements', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setPasswordReqs(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch password requirements", err);
+    }
+  };
+
+  const checkAuth = async () => {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data);
+        if (data.require_password_change === 1) {
+          setShowPasswordChange(true);
+        } else {
+          setShowPasswordChange(false);
+        }
+      }
+    } catch (err) {
+      console.error("Auth check failed", err);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
 
   const fetchLibrary = async () => {
     setIsLoadingLibrary(true);
     try {
-      const res = await fetch('/api/recipes');
+      const res = await fetch('/api/recipes', { credentials: 'include' });
+      if (!res.ok) {
+        if (res.status === 401) {
+          setUser(null);
+          return;
+        }
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
+      }
       const data = await res.json();
-      setLibrary(data.map((r: any) => ({
-        ...r,
-        ingredients: JSON.parse(r.ingredients),
-        instructions: JSON.parse(r.instructions)
-      })));
+      if (Array.isArray(data)) {
+        setLibrary(data.map((r: any) => ({
+          ...r,
+          ingredients: typeof r.ingredients === 'string' ? JSON.parse(r.ingredients) : (r.ingredients || []),
+          instructions: typeof r.instructions === 'string' ? JSON.parse(r.instructions) : (r.instructions || [])
+        })));
+      } else {
+        console.error("Library data is not an array", data);
+        setLibrary([]);
+      }
     } catch (err) {
       console.error("Failed to fetch library", err);
+      setLibrary([]);
     } finally {
       setIsLoadingLibrary(false);
+    }
+  };
+
+  const handleLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: loginUsername, password: loginPassword }),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data);
+        if (data.require_password_change === 1) {
+          setShowPasswordChange(true);
+        } else {
+          setShowPasswordChange(false);
+        }
+      } else {
+        setLoginError('Invalid username or password');
+      }
+    } catch (err) {
+      setLoginError('Connection failed');
+    }
+  };
+
+  const handlePasswordChange = async (e: FormEvent) => {
+    e.preventDefault();
+    setPasswordChangeError('');
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: newPasswordValue }),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        setShowPasswordChange(false);
+        setUser(prev => prev ? { ...prev, require_password_change: 0 } : null);
+        alert("Password changed successfully");
+      } else {
+        const data = await res.json();
+        setPasswordChangeError(data.error || "Failed to change password");
+      }
+    } catch (err) {
+      setPasswordChangeError("Connection failed");
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    setUser(null);
+    setActiveTab('upload');
+  };
+
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch('/api/settings', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setMealieUrl(data.mealieUrl || '');
+        setMealieToken(data.mealieToken || '');
+        setPasswordMinLength(parseInt(data.passwordMinLength || "10"));
+        setPasswordRequireSpecial(data.passwordRequireSpecial === "1");
+        setPasswordRequireNumber(data.passwordRequireNumber === "1");
+      } else if (res.status === 401) {
+        setUser(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch settings", err);
+    }
+  };
+
+  const saveSettings = async () => {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          mealieUrl, 
+          mealieToken,
+          passwordMinLength,
+          passwordRequireSpecial,
+          passwordRequireNumber
+        }),
+        credentials: 'include'
+      });
+      if (res.ok) {
+        alert("Settings saved successfully");
+        fetchPasswordRequirements();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to save settings");
+      }
+    } catch (err) {
+      alert("Failed to save settings");
     }
   };
 
@@ -136,7 +313,8 @@ export default function App() {
           ...upload.data,
           image_data: base64,
           mime_type: upload.file.type
-        })
+        }),
+        credentials: 'include'
       });
 
       if (res.ok) {
@@ -152,10 +330,10 @@ export default function App() {
     }
   };
 
-  const deleteFromLibrary = async (id: number) => {
+  const deleteFromLibrary = async (id: string) => {
     if (!confirm("Are you sure you want to delete this recipe?")) return;
     try {
-      await fetch(`/api/recipes/${id}`, { method: 'DELETE' });
+      await fetch(`/api/recipes/${id}`, { method: 'DELETE', credentials: 'include' });
       fetchLibrary();
     } catch (err) {
       console.error("Delete failed", err);
@@ -177,7 +355,8 @@ export default function App() {
           mealieUrl,
           apiToken: mealieToken,
           recipe
-        })
+        }),
+        credentials: 'include'
       });
       const data = await res.json();
       if (res.ok) {
@@ -189,6 +368,124 @@ export default function App() {
       alert("Failed to connect to Mealie server.");
     }
   };
+
+  if (isAuthenticating) {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center">
+        <Loader2 className="animate-spin text-emerald-600" size={48} />
+      </div>
+    );
+  }
+
+  if (showPasswordChange) {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-xl max-w-md w-full"
+        >
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-16 h-16 bg-amber-500 rounded-2xl flex items-center justify-center text-white mb-4">
+              <Lock size={32} />
+            </div>
+            <h1 className="text-2xl font-serif font-medium">Password Change Required</h1>
+            <p className="text-stone-500 text-sm mt-1 text-center">For security reasons, you must change your password before continuing.</p>
+          </div>
+
+          <form onSubmit={handlePasswordChange} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">New Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
+                <input 
+                  type="password" 
+                  required
+                  value={newPasswordValue}
+                  onChange={(e) => setNewPasswordValue(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  placeholder="New Password"
+                />
+              </div>
+              {passwordReqs && (
+                <div className="text-[10px] text-stone-400 space-y-0.5 px-1">
+                  <p>• Minimum {passwordReqs.passwordMinLength} characters</p>
+                  {passwordReqs.passwordRequireNumber === "1" && <p>• At least one number</p>}
+                  {passwordReqs.passwordRequireSpecial === "1" && <p>• At least one special character</p>}
+                </div>
+              )}
+            </div>
+            {passwordChangeError && <p className="text-red-500 text-sm text-center">{passwordChangeError}</p>}
+            <button 
+              type="submit"
+              className="w-full py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors shadow-lg"
+            >
+              Update Password
+            </button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-xl max-w-md w-full"
+        >
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white font-bold text-3xl mb-4">R</div>
+            <h1 className="text-2xl font-serif font-medium">RecipeDigitizer</h1>
+            <p className="text-stone-500 text-sm mt-1">Sign in to manage your recipes</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">Username</label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
+                <input 
+                  type="text" 
+                  required
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  placeholder="admin"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
+                <input 
+                  type="password" 
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+            {loginError && <p className="text-red-500 text-sm text-center">{loginError}</p>}
+            <button 
+              type="submit"
+              className="w-full py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-600/20"
+            >
+              Sign In
+            </button>
+          </form>
+          <div className="mt-8 pt-6 border-t border-stone-100 text-center">
+            <p className="text-xs text-stone-400">Default credentials: admin / admin123</p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#FDFCFB] text-stone-900 font-sans">
@@ -203,6 +500,16 @@ export default function App() {
             <NavButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} icon={<Upload size={18} />} label="Upload" />
             <NavButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<BookOpen size={18} />} label="Library" />
             <NavButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={18} />} label="Settings" />
+            {user.role === 'admin' && (
+              <NavButton active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<Users size={18} />} label="Admin" />
+            )}
+            <button 
+              onClick={handleLogout}
+              className="p-2 text-stone-400 hover:text-stone-600 transition-colors ml-2"
+              title="Sign Out"
+            >
+              <LogOut size={20} />
+            </button>
           </div>
         </div>
       </nav>
@@ -345,6 +652,7 @@ export default function App() {
                     {pendingUploads[currentIndex].status === 'completed' && pendingUploads[currentIndex].data && (
                       <RecipeForm 
                         data={pendingUploads[currentIndex].data!} 
+                        user={user}
                         onChange={(newData) => {
                           setPendingUploads(prev => prev.map((u, i) => i === currentIndex ? { ...u, data: newData } : u));
                         }}
@@ -464,12 +772,26 @@ export default function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="max-w-2xl mx-auto"
+              className="max-w-2xl mx-auto space-y-8"
             >
               <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-8">
-                <div>
-                  <h2 className="text-2xl font-medium mb-2">Mealie Integration</h2>
-                  <p className="text-stone-500 text-sm">Configure your Mealie instance to export recipes directly.</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-medium mb-2">Mealie Integration</h2>
+                    <p className="text-stone-500 text-sm">Configure your Mealie instance to export recipes directly.</p>
+                  </div>
+                  {(user.role === 'admin' || user.can_edit_mealie === 1) ? (
+                    <button 
+                      onClick={saveSettings}
+                      className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 transition-colors flex items-center gap-2"
+                    >
+                      <Save size={16} /> Save Settings
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1 text-amber-600 text-xs font-medium bg-amber-50 px-3 py-1.5 rounded-lg">
+                      <Lock size={14} /> Read Only
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4">
@@ -480,7 +802,8 @@ export default function App() {
                       placeholder="https://mealie.yourdomain.com"
                       value={mealieUrl}
                       onChange={(e) => setMealieUrl(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                      disabled={user.role !== 'admin' && user.can_edit_mealie === 0}
+                      className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all disabled:bg-stone-50 disabled:text-stone-400"
                     />
                   </div>
                   <div className="space-y-2">
@@ -490,16 +813,76 @@ export default function App() {
                       placeholder="Your Mealie API Token"
                       value={mealieToken}
                       onChange={(e) => setMealieToken(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                      disabled={user.role !== 'admin' && user.can_edit_mealie === 0}
+                      className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all disabled:bg-stone-50 disabled:text-stone-400"
                     />
                   </div>
                 </div>
-
-                <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl text-amber-800 text-sm">
-                  <p className="font-medium mb-1">Security Note</p>
-                  <p>Your API token is stored locally in your browser and sent to the server only when submitting recipes. Ensure you use HTTPS for your Mealie instance.</p>
-                </div>
               </div>
+
+              {user.role === 'admin' && (
+                <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-8">
+                  <div>
+                    <h2 className="text-2xl font-medium mb-2">Security Settings</h2>
+                    <p className="text-stone-500 text-sm">Configure password complexity requirements for all users.</p>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-stone-700">Minimum Password Length (Min 10)</label>
+                      <input 
+                        type="number" 
+                        min={10}
+                        value={passwordMinLength}
+                        onChange={(e) => setPasswordMinLength(Math.max(10, parseInt(e.target.value) || 10))}
+                        className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                      />
+                    </div>
+                    
+                    <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl">
+                      <div>
+                        <p className="font-medium text-stone-800">Require Special Character</p>
+                        <p className="text-xs text-stone-500">Must contain at least one: !@#$%^&*(),.?":{}|&lt;&gt;</p>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={passwordRequireSpecial}
+                        onChange={(e) => setPasswordRequireSpecial(e.target.checked)}
+                        className="w-5 h-5 accent-emerald-600"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl">
+                      <div>
+                        <p className="font-medium text-stone-800">Require Number</p>
+                        <p className="text-xs text-stone-500">Must contain at least one digit (0-9)</p>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={passwordRequireNumber}
+                        onChange={(e) => setPasswordRequireNumber(e.target.checked)}
+                        className="w-5 h-5 accent-emerald-600"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl text-amber-800 text-sm">
+                <p className="font-medium mb-1">Security Note</p>
+                <p>Ensure you use HTTPS for your Mealie instance to protect data in transit. Password complexity changes apply to all new passwords set after saving.</p>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'admin' && user.role === 'admin' && (
+            <motion.div 
+              key="admin"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+            >
+              <AdminPanel />
             </motion.div>
           )}
         </AnimatePresence>
@@ -520,7 +903,7 @@ function NavButton({ active, onClick, icon, label }: { active: boolean, onClick:
   );
 }
 
-function RecipeForm({ data, onChange, onSave, onMealie }: { data: RecipeData, onChange: (d: RecipeData) => void, onSave: () => void, onMealie: () => void }) {
+function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeData, user: UserProfile | null, onChange: (d: RecipeData) => void, onSave: () => void, onMealie: () => void }) {
   return (
     <div className="flex-1 flex flex-col space-y-6 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-stone-200">
       <div className="space-y-2">
@@ -616,7 +999,8 @@ function RecipeForm({ data, onChange, onSave, onMealie }: { data: RecipeData, on
       <div className="pt-8 mt-auto flex gap-3">
         <button 
           onClick={onSave}
-          className="flex-1 py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors flex items-center justify-center gap-2"
+          disabled={user?.role === 'readonly'}
+          className="flex-1 py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Save size={18} /> Save to Library
         </button>
@@ -626,6 +1010,309 @@ function RecipeForm({ data, onChange, onSave, onMealie }: { data: RecipeData, on
         >
           <ExternalLink size={18} /> Mealie
         </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminPanel() {
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAdding, setIsAdding] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<'admin' | 'user' | 'readonly'>('user');
+  const [newCanEditMealie, setNewCanEditMealie] = useState(false);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editUsername, setEditUsername] = useState('');
+  const [editRole, setEditRole] = useState<'admin' | 'user' | 'readonly'>('user');
+  const [editCanEditMealie, setEditCanEditMealie] = useState(false);
+  const [editRequirePasswordChange, setEditRequirePasswordChange] = useState(false);
+  const [editPassword, setEditPassword] = useState('');
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch('/api/admin/users', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setUsers(data);
+        } else {
+          console.error("Users data is not an array", data);
+          setUsers([]);
+        }
+      } else {
+        if (res.status === 401) {
+          window.location.reload(); // Force full app refresh on auth loss
+          return;
+        }
+        console.error("Failed to fetch users", res.status);
+        setUsers([]);
+      }
+    } catch (err) {
+      console.error("Error fetching users", err);
+      setUsers([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddUser = async (e: FormEvent) => {
+    e.preventDefault();
+    const res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        username: newUsername, 
+        password: newPassword, 
+        role: newRole, 
+        can_edit_mealie: newCanEditMealie 
+      }),
+      credentials: 'include'
+    });
+    if (res.ok) {
+      fetchUsers();
+      setIsAdding(false);
+      setNewUsername('');
+      setNewPassword('');
+    } else {
+      const data = await res.json();
+      alert(data.error);
+    }
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (!confirm("Delete this user?")) return;
+    const res = await fetch(`/api/admin/users/${id}`, { method: 'DELETE', credentials: 'include' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.loggedOut) {
+        window.location.reload();
+      } else {
+        fetchUsers();
+      }
+    } else {
+      const data = await res.json();
+      alert(data.error || "Delete failed");
+    }
+  };
+
+  const startEditing = (user: UserProfile) => {
+    setEditingUserId(user.id);
+    setEditUsername(user.username);
+    setEditRole(user.role);
+    setEditCanEditMealie(user.can_edit_mealie === 1);
+    setEditRequirePasswordChange(user.require_password_change === 1);
+    setEditPassword('');
+  };
+
+  const handleUpdateUser = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingUserId) return;
+
+    const res = await fetch(`/api/admin/users/${editingUserId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        username: editUsername, 
+        role: editRole, 
+        can_edit_mealie: editCanEditMealie ? 1 : 0,
+        require_password_change: editRequirePasswordChange ? 1 : 0,
+        password: editPassword || undefined
+      }),
+      credentials: 'include'
+    });
+
+    if (res.ok) {
+      setEditingUserId(null);
+      fetchUsers();
+    } else {
+      const data = await res.json();
+      alert(data.error || "Update failed");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-3xl font-serif font-medium">User Administration</h2>
+        <button 
+          onClick={() => setIsAdding(true)}
+          className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 transition-colors flex items-center gap-2"
+        >
+          <Plus size={16} /> Add User
+        </button>
+      </div>
+
+      {isAdding && (
+        <motion.div 
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm"
+        >
+          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-stone-400 uppercase">Username</label>
+              <input 
+                type="text" 
+                required
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-stone-400 uppercase">Password</label>
+              <input 
+                type="password" 
+                required
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-stone-400 uppercase">Role</label>
+              <select 
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value as any)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+                <option value="readonly">Read Only</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 h-10">
+              <input 
+                type="checkbox" 
+                id="can_edit"
+                checked={newCanEditMealie}
+                onChange={(e) => setNewCanEditMealie(e.target.checked)}
+              />
+              <label htmlFor="can_edit" className="text-sm text-stone-600">Can Edit Mealie</label>
+            </div>
+            <div className="flex gap-2">
+              <button type="submit" className="flex-1 py-2 bg-stone-900 text-white rounded-lg text-sm font-medium">Create</button>
+              <button type="button" onClick={() => setIsAdding(false)} className="px-3 py-2 bg-stone-100 text-stone-600 rounded-lg text-sm">Cancel</button>
+            </div>
+          </form>
+        </motion.div>
+      )}
+
+      <div className="bg-white rounded-3xl border border-stone-200 shadow-sm overflow-hidden overflow-x-auto">
+        <table className="w-full text-left min-w-[800px]">
+          <thead>
+            <tr className="bg-stone-50 border-b border-stone-200">
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">User</th>
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Role</th>
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Mealie Access</th>
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Pass Change</th>
+              <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-100">
+            {users.map((u) => (
+              <tr key={u.id} className="hover:bg-stone-50/50 transition-colors">
+                <td className="px-6 py-4">
+                  {editingUserId === u.id ? (
+                    <input 
+                      type="text"
+                      value={editUsername}
+                      onChange={(e) => setEditUsername(e.target.value)}
+                      className="px-2 py-1 border border-stone-200 rounded text-sm w-32"
+                    />
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-stone-100 rounded-full flex items-center justify-center text-stone-500">
+                        <User size={16} />
+                      </div>
+                      <span className="font-medium">{u.username}</span>
+                    </div>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {editingUserId === u.id ? (
+                    <select 
+                      value={editRole}
+                      onChange={(e) => setEditRole(e.target.value as any)}
+                      className="px-2 py-1 border border-stone-200 rounded text-sm"
+                    >
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                      <option value="readonly">Read Only</option>
+                    </select>
+                  ) : (
+                    <span className="text-sm font-medium capitalize">{u.role}</span>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {editingUserId === u.id ? (
+                    <input 
+                      type="checkbox"
+                      checked={editCanEditMealie}
+                      onChange={(e) => setEditCanEditMealie(e.target.checked)}
+                    />
+                  ) : (
+                    <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${u.can_edit_mealie === 1 ? 'bg-emerald-50 text-emerald-600' : 'bg-stone-100 text-stone-400'}`}>
+                      {u.can_edit_mealie === 1 ? <Shield size={12} /> : <Eye size={12} />}
+                      {u.can_edit_mealie === 1 ? 'CAN EDIT' : 'READ ONLY'}
+                    </div>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {editingUserId === u.id ? (
+                    <input 
+                      type="checkbox"
+                      checked={editRequirePasswordChange}
+                      onChange={(e) => setEditRequirePasswordChange(e.target.checked)}
+                    />
+                  ) : (
+                    <span className={`text-xs font-medium ${u.require_password_change === 1 ? 'text-amber-600' : 'text-stone-400'}`}>
+                      {u.require_password_change === 1 ? 'Required' : 'No'}
+                    </span>
+                  )}
+                </td>
+                <td className="px-6 py-4">
+                  {editingUserId === u.id ? (
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="password"
+                        placeholder="New Password"
+                        value={editPassword}
+                        onChange={(e) => setEditPassword(e.target.value)}
+                        className="px-2 py-1 border border-stone-200 rounded text-sm w-32"
+                      />
+                      <button onClick={handleUpdateUser} className="text-emerald-600 hover:text-emerald-700 font-medium text-sm">Save</button>
+                      <button onClick={() => setEditingUserId(null)} className="text-stone-400 hover:text-stone-600 font-medium text-sm">Cancel</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => startEditing(u)}
+                        className="p-2 text-stone-300 hover:text-emerald-600 transition-colors"
+                        title="Edit User"
+                      >
+                        <Settings size={18} />
+                      </button>
+                      <button 
+                        onClick={() => handleDeleteUser(u.id)}
+                        className="p-2 text-stone-300 hover:text-red-500 transition-colors"
+                        title="Delete User"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
