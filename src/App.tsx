@@ -20,7 +20,12 @@ import {
   Shield,
   Eye,
   CheckCircle,
-  AlertCircle
+  AlertCircle,
+  Search,
+  Tag,
+  Download,
+  History,
+  Filter
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, RecipeData } from "./services/gemini";
@@ -37,6 +42,7 @@ interface SavedRecipe extends RecipeData {
   id: string;
   image_data?: string;
   mime_type?: string;
+  tags_json?: string; // Original JSON from server if needed
   created_at: string;
 }
 
@@ -49,11 +55,14 @@ interface PendingUpload {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin' | 'audit'>('upload');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [library, setLibrary] = useState<SavedRecipe[]>([]);
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
   
   // Auth State
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -128,7 +137,11 @@ export default function App() {
   const fetchLibrary = async () => {
     setIsLoadingLibrary(true);
     try {
-      const res = await fetch('/api/recipes', { credentials: 'include' });
+      const url = new URL('/api/recipes', window.location.origin);
+      if (searchQuery) url.searchParams.append('search', searchQuery);
+      if (selectedTag) url.searchParams.append('tag', selectedTag);
+
+      const res = await fetch(url.toString(), { credentials: 'include' });
       if (!res.ok) {
         if (res.status === 401) {
           setUser(null);
@@ -139,11 +152,20 @@ export default function App() {
       }
       const data = await res.json();
       if (Array.isArray(data)) {
-        setLibrary(data.map((r: any) => ({
+        const mapped = data.map((r: any) => ({
           ...r,
           ingredients: typeof r.ingredients === 'string' ? JSON.parse(r.ingredients) : (r.ingredients || []),
-          instructions: typeof r.instructions === 'string' ? JSON.parse(r.instructions) : (r.instructions || [])
-        })));
+          instructions: typeof r.instructions === 'string' ? JSON.parse(r.instructions) : (r.instructions || []),
+          tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags || [])
+        }));
+        setLibrary(mapped);
+
+        // Extract all unique tags
+        const tagsSet = new Set<string>();
+        mapped.forEach((r: SavedRecipe) => {
+          (r.tags || []).forEach((t: string) => tagsSet.add(t));
+        });
+        setAvailableTags(Array.from(tagsSet));
       } else {
         console.error("Library data is not an array", data);
         setLibrary([]);
@@ -155,6 +177,15 @@ export default function App() {
       setIsLoadingLibrary(false);
     }
   };
+
+  useEffect(() => {
+    if (user && user.require_password_change !== 1) {
+      const timer = setTimeout(() => {
+        fetchLibrary();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [searchQuery, selectedTag]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -513,7 +544,10 @@ export default function App() {
             <NavButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<BookOpen size={18} />} label="Library" />
             <NavButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={18} />} label="Settings" />
             {user.role === 'admin' && (
-              <NavButton active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<Users size={18} />} label="Admin" />
+              <>
+                <NavButton active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<Users size={18} />} label="Admin" />
+                <NavButton active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<History size={18} />} label="Logs" />
+              </>
             )}
             <button 
               onClick={handleLogout}
@@ -717,10 +751,43 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <h2 className="text-3xl font-serif font-medium">Your Recipe Library</h2>
-                <div className="text-sm text-stone-500">{library.length} recipes saved</div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={16} />
+                    <input 
+                      type="text"
+                      placeholder="Search recipes..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10 pr-4 py-2 bg-white border border-stone-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none w-full md:w-64"
+                    />
+                  </div>
+                  <div className="text-sm text-stone-500">{library.length} recipes found</div>
+                </div>
               </div>
+
+              {availableTags.length > 0 && (
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Filter size={14} className="text-stone-400 mr-1" />
+                  <button 
+                    onClick={() => setSelectedTag(null)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${!selectedTag ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
+                  >
+                    All
+                  </button>
+                  {availableTags.map(tag => (
+                    <button 
+                      key={tag}
+                      onClick={() => setSelectedTag(tag === selectedTag ? null : tag)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${tag === selectedTag ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {isLoadingLibrary ? (
                 <div className="flex justify-center py-20">
@@ -753,8 +820,29 @@ export default function App() {
                         </div>
                       </div>
                       <div className="p-6">
-                        <h3 className="text-xl font-medium mb-1 line-clamp-1">{recipe.name}</h3>
-                        <p className="text-stone-500 text-sm mb-4 line-clamp-2">{recipe.description || "No description provided."}</p>
+                        <div className="flex items-start justify-between mb-1">
+                          <h3 className="text-xl font-medium line-clamp-1">{recipe.name}</h3>
+                          <a 
+                            href={`/api/recipes/${recipe.id}/export`}
+                            download
+                            className="p-1.5 text-stone-400 hover:text-stone-600 hover:bg-stone-100 rounded-lg transition-all"
+                            title="Export as Markdown"
+                          >
+                            <Download size={16} />
+                          </a>
+                        </div>
+                        <p className="text-stone-500 text-sm mb-3 line-clamp-2">{recipe.description || "No description provided."}</p>
+                        
+                        {recipe.tags && recipe.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-4">
+                            {recipe.tags.map((tag: string) => (
+                              <span key={tag} className="px-2 py-0.5 bg-stone-50 text-stone-400 text-[10px] font-bold uppercase tracking-wider rounded border border-stone-100">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="flex gap-2">
                           <button 
                             onClick={() => {
@@ -964,8 +1052,107 @@ export default function App() {
               <AdminPanel passwordReqs={passwordReqs} />
             </motion.div>
           )}
+
+          {activeTab === 'audit' && user.role === 'admin' && (
+            <motion.div 
+              key="audit"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+            >
+              <AuditLogs />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
+    </div>
+  );
+}
+
+function AuditLogs() {
+  const [logs, setLogs] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    fetchLogs();
+  }, []);
+
+  const fetchLogs = async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/admin/audit-logs', { credentials: 'include' });
+      if (res.ok) {
+        setLogs(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to fetch logs", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-3xl font-serif font-medium">System Audit Logs</h2>
+        <button 
+          onClick={fetchLogs}
+          className="p-2 text-stone-400 hover:text-stone-600 transition-colors"
+          title="Refresh Logs"
+        >
+          <Loader2 className={isLoading ? "animate-spin" : ""} size={20} />
+        </button>
+      </div>
+
+      <div className="bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-stone-50 border-b border-stone-200">
+                <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">Timestamp</th>
+                <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">User</th>
+                <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">Action</th>
+                <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">Details</th>
+                <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">IP Address</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+              {logs.length === 0 && !isLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic">
+                    No audit logs found.
+                  </td>
+                </tr>
+              ) : logs.map((log) => (
+                <tr key={log.id} className="hover:bg-stone-50 transition-colors">
+                  <td className="px-6 py-4 text-sm text-stone-600 whitespace-nowrap">
+                    {new Date(log.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-6 py-4 text-sm font-medium text-stone-900">
+                    {log.username || 'System'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                      log.action.includes('DELETE') ? 'bg-red-50 text-red-600' :
+                      log.action.includes('CREATE') ? 'bg-emerald-50 text-emerald-600' :
+                      log.action.includes('LOGIN') ? 'bg-blue-50 text-blue-600' :
+                      'bg-stone-100 text-stone-600'
+                    }`}>
+                      {log.action}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-stone-500 max-w-xs truncate" title={log.details}>
+                    {log.details}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-stone-400 font-mono">
+                    {log.ip_address}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -983,6 +1170,21 @@ function NavButton({ active, onClick, icon, label }: { active: boolean, onClick:
 }
 
 function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeData, user: UserProfile | null, onChange: (d: RecipeData) => void, onSave: () => void, onMealie: () => void }) {
+  const [newTag, setNewTag] = useState('');
+
+  const addTag = () => {
+    if (!newTag.trim()) return;
+    const tags = data.tags || [];
+    if (!tags.includes(newTag.trim())) {
+      onChange({ ...data, tags: [...tags, newTag.trim()] });
+    }
+    setNewTag('');
+  };
+
+  const removeTag = (tag: string) => {
+    onChange({ ...data, tags: (data.tags || []).filter(t => t !== tag) });
+  };
+
   return (
     <div className="flex-1 flex flex-col space-y-6 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-stone-200">
       <div className="space-y-2">
@@ -993,6 +1195,36 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
           onChange={(e) => onChange({ ...data, name: e.target.value })}
           className="w-full text-2xl font-serif font-medium border-b border-stone-100 focus:border-emerald-500 outline-none pb-1 transition-colors"
         />
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Tags</label>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {(data.tags || []).map(tag => (
+            <span key={tag} className="px-2 py-1 bg-emerald-50 text-emerald-700 text-xs font-medium rounded-lg flex items-center gap-1">
+              {tag}
+              <button onClick={() => removeTag(tag)} className="hover:text-emerald-900">
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input 
+            type="text"
+            value={newTag}
+            onChange={(e) => setNewTag(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addTag()}
+            placeholder="Add a tag..."
+            className="flex-1 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500"
+          />
+          <button 
+            onClick={addTag}
+            className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-sm font-medium hover:bg-stone-800"
+          >
+            Add
+          </button>
+        </div>
       </div>
 
       <div className="space-y-2">

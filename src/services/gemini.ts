@@ -7,6 +7,7 @@ export interface RecipeData {
   description: string;
   ingredients: string[];
   instructions: string[];
+  tags?: string[];
 }
 
 export async function extractRecipeFromImage(base64Data: string, mimeType: string): Promise<RecipeData> {

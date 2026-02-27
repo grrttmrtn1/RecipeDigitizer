@@ -9,6 +9,7 @@ import axios from "axios";
 import bcrypt from "bcryptjs";
 import session from "express-session";
 import SQLiteStoreFactory from "connect-sqlite3";
+import rateLimit from "express-rate-limit";
 
 const SQLiteStore = SQLiteStoreFactory(session);
 
@@ -59,7 +60,24 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    action TEXT NOT NULL,
+    details TEXT,
+    ip_address TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
 `);
+
+// Migration: Add tags column to recipes if it doesn't exist
+try {
+  db.prepare("ALTER TABLE recipes ADD COLUMN tags TEXT").run();
+} catch (e) {
+  // Column likely already exists
+}
 
 // Migration: Check if id column is INTEGER (old schema)
 const tableInfo = db.prepare("PRAGMA table_info(users)").all();
@@ -167,10 +185,39 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Rate limiting for auth endpoints
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 20, // Limit each IP to 20 requests per windowMs
+    message: { error: "Too many attempts, please try again later" },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 100, // Limit each IP to 100 requests per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Audit Log Helper
+  const logAction = (userId: string | undefined, action: string, details: any, req: any) => {
+    try {
+      const id = randomUUID();
+      db.prepare(`
+        INSERT INTO audit_logs (id, user_id, action, details, ip_address)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, userId || null, action, JSON.stringify(details), req.ip);
+    } catch (err) {
+      console.error("Failed to log action:", err);
+    }
+  };
+
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-  app.set('trust proxy', true);
+  app.set('trust proxy', 1);
   app.use((req, res, next) => {
     // Force https for session cookie security in the AI Studio iframe environment
     req.headers['x-forwarded-proto'] = 'https';
@@ -249,6 +296,11 @@ async function startServer() {
 
   app.use(checkPasswordChange);
 
+  // Apply rate limiting
+  app.use("/api/auth/login", authLimiter);
+  app.use("/api/auth/change-password", authLimiter);
+  app.use("/api/", apiLimiter);
+
   app.get("/api/debug/admin", (req, res) => {
     const user = db.prepare("SELECT * FROM users WHERE username = 'admin'").get();
     res.json(user);
@@ -276,6 +328,8 @@ async function startServer() {
       req.session.username = user.username;
       req.session.role = user.role;
       
+      logAction(user.id, "LOGIN", { username: user.username }, req);
+
       req.session.save((err) => {
         if (err) {
           console.error("[AUTH] Session save error:", err);
@@ -297,7 +351,9 @@ async function startServer() {
   });
 
   app.post("/api/auth/logout", (req, res) => {
+    const userId = req.session.userId;
     req.session.destroy(() => {
+      if (userId) logAction(userId, "LOGOUT", {}, req);
       res.json({ success: true });
     });
   });
@@ -321,6 +377,8 @@ async function startServer() {
     const hashedPassword = bcrypt.hashSync(password, 10);
     db.prepare("UPDATE users SET password = ?, require_password_change = 0 WHERE id = ?").run(hashedPassword, req.session.userId);
     
+    logAction(req.session.userId, "PASSWORD_CHANGE", { voluntary: true }, req);
+
     req.session.save((err: any) => {
       if (err) {
         console.error("Session save error after password change:", err);
@@ -354,6 +412,8 @@ async function startServer() {
       const hashedPassword = bcrypt.hashSync(password, 10);
       db.prepare("INSERT INTO users (id, username, password, role, can_edit_mealie, require_password_change) VALUES (?, ?, ?, ?, ?, ?)")
         .run(randomUUID(), username, hashedPassword, role, can_edit_mealie ? 1 : 0, 1);
+      
+      logAction(req.session.userId, "USER_CREATE", { target_username: username, role }, req);
       res.json({ success: true });
     } catch (error) {
       res.status(400).json({ error: "Username already exists" });
@@ -374,6 +434,7 @@ async function startServer() {
         db.prepare("UPDATE users SET username = ?, role = ?, can_edit_mealie = ?, require_password_change = ? WHERE id = ?")
           .run(username, role, can_edit_mealie ? 1 : 0, require_password_change ? 1 : 0, req.params.id);
       }
+      logAction(req.session.userId, "USER_UPDATE", { target_id: req.params.id, username, role }, req);
       res.json({ success: true });
     } catch (error) {
       res.status(400).json({ error: "Update failed" });
@@ -381,7 +442,7 @@ async function startServer() {
   });
 
   app.delete("/api/admin/users/:id", isAuthenticated, isAdmin, (req, res) => {
-    const userToDelete: any = db.prepare("SELECT role FROM users WHERE id = ?").get(req.params.id);
+    const userToDelete: any = db.prepare("SELECT username, role FROM users WHERE id = ?").get(req.params.id);
     if (!userToDelete) return res.status(404).json({ error: "User not found" });
 
     if (userToDelete.role === 'admin') {
@@ -392,6 +453,7 @@ async function startServer() {
     }
 
     db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
+    logAction(req.session.userId, "USER_DELETE", { target_id: req.params.id, username: userToDelete.username }, req);
     if (req.params.id === req.session.userId) {
       req.session.destroy(() => {
         res.json({ success: true, loggedOut: true });
@@ -431,18 +493,52 @@ async function startServer() {
       if (passwordRequireSpecial !== undefined) upsert.run("passwordRequireSpecial", passwordRequireSpecial ? "1" : "0");
       if (passwordRequireNumber !== undefined) upsert.run("passwordRequireNumber", passwordRequireNumber ? "1" : "0");
     })();
+
+    logAction(req.session.userId, "SETTINGS_UPDATE", { keys: Object.keys(req.body) }, req);
     res.json({ success: true });
+  });
+
+  app.get("/api/admin/audit-logs", isAuthenticated, (req: any, res) => {
+    if (req.session.role !== 'admin') return res.status(403).json({ error: "Admin only" });
+    const logs = db.prepare(`
+      SELECT a.*, u.username 
+      FROM audit_logs a 
+      LEFT JOIN users u ON a.user_id = u.id 
+      ORDER BY a.created_at DESC 
+      LIMIT 100
+    `).all();
+    res.json(logs);
   });
 
   // Recipe Routes
   app.get("/api/recipes", isAuthenticated, (req: any, res) => {
     try {
-      let recipes;
-      if (req.session.role === 'admin') {
-        recipes = db.prepare("SELECT * FROM recipes ORDER BY created_at DESC").all();
-      } else {
-        recipes = db.prepare("SELECT * FROM recipes WHERE user_id = ? ORDER BY created_at DESC").all(req.session.userId);
+      const { search, tag } = req.query;
+      let query = "SELECT * FROM recipes";
+      let params: any[] = [];
+      let conditions: string[] = [];
+
+      if (req.session.role !== 'admin') {
+        conditions.push("user_id = ?");
+        params.push(req.session.userId);
       }
+
+      if (search) {
+        conditions.push("(name LIKE ? OR description LIKE ?)");
+        params.push(`%${search}%`, `%${search}%`);
+      }
+
+      if (tag) {
+        conditions.push("tags LIKE ?");
+        params.push(`%${tag}%`);
+      }
+
+      if (conditions.length > 0) {
+        query += " WHERE " + conditions.join(" AND ");
+      }
+
+      query += " ORDER BY created_at DESC";
+      const recipes = db.prepare(query).all(...params);
       res.json(recipes);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch recipes" });
@@ -452,16 +548,42 @@ async function startServer() {
   app.post("/api/recipes", isAuthenticated, (req: any, res) => {
     if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
     
-    const { name, description, ingredients, instructions, image_data, mime_type } = req.body;
+    const { name, description, ingredients, instructions, image_data, mime_type, tags } = req.body;
     try {
       const id = randomUUID();
       db.prepare(`
-        INSERT INTO recipes (id, user_id, name, description, ingredients, instructions, image_data, mime_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, req.session.userId, name, description, JSON.stringify(ingredients), JSON.stringify(instructions), image_data, mime_type);
+        INSERT INTO recipes (id, user_id, name, description, ingredients, instructions, image_data, mime_type, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, req.session.userId, name, description, JSON.stringify(ingredients), JSON.stringify(instructions), image_data, mime_type, JSON.stringify(tags || []));
+      
+      logAction(req.session.userId, "RECIPE_CREATE", { recipe_id: id, name }, req);
       res.json({ id });
     } catch (error) {
       res.status(500).json({ error: "Failed to save recipe" });
+    }
+  });
+
+  app.put("/api/recipes/:id", isAuthenticated, (req: any, res) => {
+    if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
+    
+    const { name, description, ingredients, instructions, tags } = req.body;
+    try {
+      const recipe: any = db.prepare("SELECT user_id FROM recipes WHERE id = ?").get(req.params.id);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+      if (req.session.role !== 'admin' && recipe.user_id !== req.session.userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      db.prepare(`
+        UPDATE recipes 
+        SET name = ?, description = ?, ingredients = ?, instructions = ?, tags = ?
+        WHERE id = ?
+      `).run(name, description, JSON.stringify(ingredients), JSON.stringify(instructions), JSON.stringify(tags || []), req.params.id);
+      
+      logAction(req.session.userId, "RECIPE_UPDATE", { recipe_id: req.params.id, name }, req);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update recipe" });
     }
   });
 
@@ -469,14 +591,46 @@ async function startServer() {
     if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
     
     try {
+      const recipe: any = db.prepare("SELECT name FROM recipes WHERE id = ?").get(req.params.id);
       if (req.session.role === 'admin') {
         db.prepare("DELETE FROM recipes WHERE id = ?").run(req.params.id);
       } else {
         db.prepare("DELETE FROM recipes WHERE id = ? AND user_id = ?").run(req.params.id, req.session.userId);
       }
+      logAction(req.session.userId, "RECIPE_DELETE", { recipe_id: req.params.id, name: recipe?.name }, req);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to delete recipe" });
+    }
+  });
+
+  app.get("/api/recipes/:id/export", isAuthenticated, (req: any, res) => {
+    try {
+      const recipe: any = db.prepare("SELECT * FROM recipes WHERE id = ?").get(req.params.id);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+      if (req.session.role !== 'admin' && recipe.user_id !== req.session.userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const ingredients = JSON.parse(recipe.ingredients);
+      const instructions = JSON.parse(recipe.instructions);
+      const tags = JSON.parse(recipe.tags || "[]");
+
+      let markdown = `# ${recipe.name}\n\n`;
+      if (recipe.description) markdown += `${recipe.description}\n\n`;
+      if (tags.length > 0) markdown += `**Tags:** ${tags.join(", ")}\n\n`;
+      
+      markdown += `## Ingredients\n`;
+      ingredients.forEach((ing: string) => markdown += `- ${ing}\n`);
+      
+      markdown += `\n## Instructions\n`;
+      instructions.forEach((inst: string, i: number) => markdown += `${i + 1}. ${inst}\n`);
+
+      res.setHeader('Content-Type', 'text/markdown');
+      res.setHeader('Content-Disposition', `attachment; filename="${recipe.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.md"`);
+      res.send(markdown);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to export recipe" });
     }
   });
 
@@ -503,6 +657,7 @@ async function startServer() {
           "Content-Type": "application/json"
         }
       });
+      logAction(req.session.userId, "MEALIE_SUBMIT", { recipe_name: recipe.name }, req);
       res.json(response.data);
     } catch (error: any) {
       res.status(500).json({ error: "Failed to submit to Mealie", details: error.response?.data });
