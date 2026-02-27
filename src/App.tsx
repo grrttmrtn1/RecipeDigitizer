@@ -25,7 +25,13 @@ import {
   Tag,
   Download,
   History,
-  Filter
+  Filter,
+  Calendar,
+  ShoppingCart,
+  FolderHeart,
+  Printer,
+  Zap,
+  Layers
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, RecipeData } from "./services/gemini";
@@ -42,20 +48,37 @@ interface SavedRecipe extends RecipeData {
   id: string;
   image_data?: string;
   mime_type?: string;
-  tags_json?: string; // Original JSON from server if needed
+  tags_json?: string;
+  collection_id?: string;
+  nutrition_info?: string; // JSON string
+  additional_images?: { image_data: string, mime_type: string }[];
   created_at: string;
 }
 
+interface Collection {
+  id: string;
+  name: string;
+  description: string;
+}
+
+interface MealPlanEntry {
+  id: string;
+  recipe_id: string;
+  recipe_name: string;
+  date: string;
+  meal_type: string;
+}
+
 interface PendingUpload {
-  file: File;
-  preview: string;
+  id: string;
+  files: { file: File, preview: string }[];
   status: 'pending' | 'processing' | 'completed' | 'error';
   data?: RecipeData;
   error?: string;
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin' | 'audit'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin' | 'audit' | 'meal-plan' | 'shopping-list' | 'collections'>('upload');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [library, setLibrary] = useState<SavedRecipe[]>([]);
@@ -63,6 +86,13 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [mealPlans, setMealPlans] = useState<MealPlanEntry[]>([]);
+  const [shoppingList, setShoppingList] = useState<string[]>([]);
+  const [isGeneratingList, setIsGeneratingList] = useState(false);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [printRecipe, setPrintRecipe] = useState<SavedRecipe | null>(null);
   
   // Auth State
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -99,9 +129,25 @@ export default function App() {
     if (user && user.require_password_change !== 1) {
       fetchLibrary();
       fetchSettings();
+      fetchCollections();
+      fetchMealPlans();
     }
     fetchPasswordRequirements();
   }, [user]);
+
+  const fetchCollections = async () => {
+    try {
+      const res = await fetch('/api/collections', { credentials: 'include' });
+      if (res.ok) setCollections(await res.json());
+    } catch (err) { console.error("Failed to fetch collections", err); }
+  };
+
+  const fetchMealPlans = async () => {
+    try {
+      const res = await fetch('/api/meal-plan', { credentials: 'include' });
+      if (res.ok) setMealPlans(await res.json());
+    } catch (err) { console.error("Failed to fetch meal plans", err); }
+  };
 
   const fetchPasswordRequirements = async () => {
     try {
@@ -140,6 +186,7 @@ export default function App() {
       const url = new URL('/api/recipes', window.location.origin);
       if (searchQuery) url.searchParams.append('search', searchQuery);
       if (selectedTag) url.searchParams.append('tag', selectedTag);
+      if (selectedCollectionId) url.searchParams.append('collection_id', selectedCollectionId);
 
       const res = await fetch(url.toString(), { credentials: 'include' });
       if (!res.ok) {
@@ -185,7 +232,7 @@ export default function App() {
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [searchQuery, selectedTag]);
+  }, [searchQuery, selectedTag, selectedCollectionId]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -297,13 +344,28 @@ export default function App() {
     const newUploads: PendingUpload[] = Array.from(files)
       .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf')
       .map(file => ({
-        file,
-        preview: URL.createObjectURL(file),
+        id: randomUUID(),
+        files: [{
+          file,
+          preview: URL.createObjectURL(file)
+        }],
         status: 'pending'
       }));
 
     setPendingUploads(prev => [...prev, ...newUploads]);
     setActiveTab('upload');
+  };
+
+  const addPageToUpload = (index: number, files: FileList | null) => {
+    if (!files) return;
+    const newFiles = Array.from(files).map(file => ({
+      file,
+      preview: URL.createObjectURL(file)
+    }));
+    setPendingUploads(prev => prev.map((u, i) => i === index ? {
+      ...u,
+      files: [...u.files, ...newFiles]
+    } : u));
   };
 
   const processRecipe = async (index: number) => {
@@ -313,14 +375,17 @@ export default function App() {
     setPendingUploads(prev => prev.map((u, i) => i === index ? { ...u, status: 'processing' } : u));
 
     try {
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(upload.file);
-      });
-      const base64 = await base64Promise;
+      const images = await Promise.all(upload.files.map(async (f) => {
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(f.file);
+        });
+        const base64 = await base64Promise;
+        return { base64Data: base64, mimeType: f.file.type };
+      }));
       
-      const data = await extractRecipeFromImage(base64, upload.file.type);
+      const data = await extractRecipeFromImage(images);
       
       setPendingUploads(prev => prev.map((u, i) => i === index ? { 
         ...u, 
@@ -341,27 +406,31 @@ export default function App() {
     if (!upload.data) return;
 
     try {
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(upload.file);
-      });
-      const base64 = await base64Promise;
+      const images = await Promise.all(upload.files.map(async (f) => {
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(f.file);
+        });
+        const base64 = await base64Promise;
+        return { image_data: base64, mime_type: f.file.type };
+      }));
 
       const res = await fetch('/api/recipes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...upload.data,
-          image_data: base64,
-          mime_type: upload.file.type
+          image_data: images[0].image_data,
+          mime_type: images[0].mime_type,
+          additional_images: images.slice(1),
+          collection_id: selectedCollectionId
         }),
         credentials: 'include'
       });
 
       if (res.ok) {
         fetchLibrary();
-        // Optionally remove from pending
         setPendingUploads(prev => prev.filter((_, i) => i !== index));
         if (currentIndex >= pendingUploads.length - 1) {
           setCurrentIndex(Math.max(0, pendingUploads.length - 2));
@@ -380,6 +449,13 @@ export default function App() {
     } catch (err) {
       console.error("Delete failed", err);
     }
+  };
+
+  const analyzeNutrition = async (id: string) => {
+    try {
+      const res = await fetch(`/api/recipes/${id}/nutrition`, { method: 'POST' });
+      if (res.ok) fetchLibrary();
+    } catch (err) { console.error(err); }
   };
 
   const submitToMealie = async (recipe: RecipeData) => {
@@ -539,9 +615,12 @@ export default function App() {
             <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-bold">R</div>
             <h1 className="text-xl font-semibold tracking-tight">RecipeDigitizer</h1>
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-1 overflow-x-auto no-scrollbar">
             <NavButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} icon={<Upload size={18} />} label="Upload" />
             <NavButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<BookOpen size={18} />} label="Library" />
+            <NavButton active={activeTab === 'collections'} onClick={() => setActiveTab('collections')} icon={<FolderHeart size={18} />} label="Collections" />
+            <NavButton active={activeTab === 'meal-plan'} onClick={() => setActiveTab('meal-plan')} icon={<Calendar size={18} />} label="Plan" />
+            <NavButton active={activeTab === 'shopping-list'} onClick={() => setActiveTab('shopping-list')} icon={<ShoppingCart size={18} />} label="Shop" />
             <NavButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={18} />} label="Settings" />
             {user.role === 'admin' && (
               <>
@@ -551,7 +630,7 @@ export default function App() {
             )}
             <button 
               onClick={handleLogout}
-              className="p-2 text-stone-400 hover:text-stone-600 transition-colors ml-2"
+              className="p-2 text-stone-400 hover:text-stone-600 transition-colors ml-2 flex-shrink-0"
               title="Sign Out"
             >
               <LogOut size={20} />
@@ -559,6 +638,10 @@ export default function App() {
           </div>
         </div>
       </nav>
+
+      {isPrinting && printRecipe && (
+        <PrintView recipe={printRecipe} onClose={() => setIsPrinting(false)} />
+      )}
 
       <main className="pt-24 pb-12 max-w-6xl mx-auto px-4">
         {mealieStatus && (
@@ -616,17 +699,24 @@ export default function App() {
                   {/* Left: Preview & Navigation */}
                   <div className="space-y-4">
                     <div className="bg-white p-4 rounded-3xl border border-stone-200 shadow-sm relative overflow-hidden aspect-[4/3] flex items-center justify-center">
-                      {pendingUploads[currentIndex].file.type === 'application/pdf' ? (
+                      {pendingUploads[currentIndex].files[0].file.type === 'application/pdf' ? (
                         <div className="flex flex-col items-center text-stone-400">
                           <FileText size={64} />
-                          <p className="mt-2 font-medium">{pendingUploads[currentIndex].file.name}</p>
+                          <p className="mt-2 font-medium">{pendingUploads[currentIndex].files[0].file.name}</p>
                         </div>
                       ) : (
-                        <img 
-                          src={pendingUploads[currentIndex].preview} 
-                          className="max-h-full max-w-full object-contain rounded-lg" 
-                          alt="Recipe preview" 
-                        />
+                        <div className="relative w-full h-full">
+                          <img 
+                            src={pendingUploads[currentIndex].files[0].preview} 
+                            className="max-h-full max-w-full object-contain rounded-lg mx-auto" 
+                            alt="Recipe preview" 
+                          />
+                          {pendingUploads[currentIndex].files.length > 1 && (
+                            <div className="absolute bottom-4 right-4 bg-emerald-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg flex items-center gap-1">
+                              <Layers size={12} /> {pendingUploads[currentIndex].files.length} PAGES
+                            </div>
+                          )}
+                        </div>
                       )}
                       
                       {pendingUploads.length > 1 && (
@@ -650,9 +740,24 @@ export default function App() {
                     </div>
                     
                     <div className="flex items-center justify-between px-2">
-                      <span className="text-sm font-medium text-stone-500">
-                        Recipe {currentIndex + 1} of {pendingUploads.length}
-                      </span>
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm font-medium text-stone-500">
+                          Recipe {currentIndex + 1} of {pendingUploads.length}
+                        </span>
+                        <button 
+                          onClick={() => {
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.multiple = true;
+                            input.accept = 'image/*,application/pdf';
+                            input.onchange = (e) => addPageToUpload(currentIndex, (e.target as HTMLInputElement).files);
+                            input.click();
+                          }}
+                          className="text-xs bg-stone-100 text-stone-600 px-3 py-1.5 rounded-lg hover:bg-stone-200 transition-colors flex items-center gap-1.5 font-bold uppercase tracking-wider"
+                        >
+                          <Plus size={14} /> Add Page
+                        </button>
+                      </div>
                       <button 
                         onClick={() => {
                           const newUploads = pendingUploads.filter((_, i) => i !== currentIndex);
@@ -670,14 +775,19 @@ export default function App() {
                         <button 
                           key={i}
                           onClick={() => setCurrentIndex(i)}
-                          className={`flex-shrink-0 w-16 h-16 rounded-xl border-2 transition-all overflow-hidden ${currentIndex === i ? 'border-emerald-500 scale-105' : 'border-transparent opacity-60'}`}
+                          className={`flex-shrink-0 w-16 h-16 rounded-xl border-2 transition-all overflow-hidden relative ${currentIndex === i ? 'border-emerald-500 scale-105' : 'border-transparent opacity-60'}`}
                         >
-                          {u.file.type === 'application/pdf' ? (
+                          {u.files[0].file.type === 'application/pdf' ? (
                             <div className="w-full h-full bg-stone-100 flex items-center justify-center text-stone-400">
                               <FileText size={20} />
                             </div>
                           ) : (
-                            <img src={u.preview} className="w-full h-full object-cover" />
+                            <img src={u.files[0].preview} className="w-full h-full object-cover" />
+                          )}
+                          {u.files.length > 1 && (
+                            <div className="absolute top-0 right-0 bg-emerald-600 text-white w-5 h-5 flex items-center justify-center text-[10px] font-bold">
+                              {u.files.length}
+                            </div>
                           )}
                         </button>
                       ))}
@@ -686,6 +796,18 @@ export default function App() {
 
                   {/* Right: Editor */}
                   <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm min-h-[500px] flex flex-col">
+                    <div className="mb-6">
+                      <label className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-2 block">Save to Collection</label>
+                      <select 
+                        value={selectedCollectionId || ''} 
+                        onChange={(e) => setSelectedCollectionId(e.target.value || null)}
+                        className="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
+                      >
+                        <option value="">No Collection (General Library)</option>
+                        {collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+
                     {pendingUploads[currentIndex].status === 'pending' && (
                       <div className="flex-1 flex flex-col items-center justify-center text-center">
                         <div className="w-16 h-16 bg-stone-50 text-stone-400 rounded-full flex items-center justify-center mb-4">
@@ -810,26 +932,50 @@ export default function App() {
                             <ImageIcon size={32} />
                           </div>
                         )}
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                          <button 
+                            onClick={() => { setPrintRecipe(recipe); setIsPrinting(true); }}
+                            className="p-2 bg-white/90 backdrop-blur text-stone-600 rounded-full hover:bg-stone-50"
+                            title="Print Recipe"
+                          >
+                            <Printer size={16} />
+                          </button>
                           <button 
                             onClick={() => deleteFromLibrary(recipe.id)}
                             className="p-2 bg-white/90 backdrop-blur text-red-500 rounded-full hover:bg-red-50"
+                            title="Delete Recipe"
                           >
                             <Trash2 size={16} />
                           </button>
                         </div>
+                        {recipe.nutrition_info && (
+                          <div className="absolute bottom-2 left-2 bg-black/60 backdrop-blur text-white px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider">
+                            {JSON.parse(recipe.nutrition_info).calories} kcal
+                          </div>
+                        )}
                       </div>
                       <div className="p-6">
                         <div className="flex items-start justify-between mb-1">
                           <h3 className="text-xl font-medium line-clamp-1">{recipe.name}</h3>
-                          <a 
-                            href={`/api/recipes/${recipe.id}/export`}
-                            download
-                            className="p-1.5 text-stone-400 hover:text-stone-600 hover:bg-stone-100 rounded-lg transition-all"
-                            title="Export as Markdown"
-                          >
-                            <Download size={16} />
-                          </a>
+                          <div className="flex items-center gap-1">
+                            {!recipe.nutrition_info && (
+                              <button 
+                                onClick={() => analyzeNutrition(recipe.id)}
+                                className="p-1.5 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                                title="Analyze Nutrition"
+                              >
+                                <Zap size={16} />
+                              </button>
+                            )}
+                            <a 
+                              href={`/api/recipes/${recipe.id}/export`}
+                              download
+                              className="p-1.5 text-stone-400 hover:text-stone-600 hover:bg-stone-100 rounded-lg transition-all"
+                              title="Export as Markdown"
+                            >
+                              <Download size={16} />
+                            </a>
+                          </div>
                         </div>
                         <p className="text-stone-500 text-sm mb-3 line-clamp-2">{recipe.description || "No description provided."}</p>
                         
@@ -848,14 +994,18 @@ export default function App() {
                             onClick={() => {
                               // Load into editor/viewer
                               setPendingUploads([{
-                                file: new File([], "saved-recipe"), // dummy file
-                                preview: recipe.image_data || "",
+                                id: randomUUID(),
+                                files: [{
+                                  file: new File([], "saved-recipe"), // dummy file
+                                  preview: recipe.image_data || "",
+                                }],
                                 status: 'completed',
                                 data: {
                                   name: recipe.name,
                                   description: recipe.description,
                                   ingredients: recipe.ingredients,
-                                  instructions: recipe.instructions
+                                  instructions: recipe.instructions,
+                                  tags: recipe.tags
                                 }
                               }]);
                               setCurrentIndex(0);
@@ -1051,6 +1201,34 @@ export default function App() {
             >
               <AdminPanel passwordReqs={passwordReqs} />
             </motion.div>
+          )}
+
+          {activeTab === 'meal-plan' && (
+            <MealPlan 
+              mealPlans={mealPlans} 
+              library={library} 
+              onUpdate={fetchMealPlans} 
+            />
+          )}
+
+          {activeTab === 'shopping-list' && (
+            <ShoppingList 
+              library={library} 
+              shoppingList={shoppingList}
+              setShoppingList={setShoppingList}
+              isGenerating={isGeneratingList}
+              setIsGenerating={setIsGeneratingList}
+            />
+          )}
+
+          {activeTab === 'collections' && (
+            <Collections 
+              collections={collections} 
+              onUpdate={fetchCollections} 
+              library={library}
+              setSelectedCollectionId={setSelectedCollectionId}
+              setActiveTab={setActiveTab}
+            />
           )}
 
           {activeTab === 'audit' && user.role === 'admin' && (
@@ -1674,6 +1852,322 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function MealPlan({ mealPlans, library, onUpdate }: { mealPlans: MealPlanEntry[], library: SavedRecipe[], onUpdate: () => void }) {
+  const [selectedRecipeId, setSelectedRecipeId] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedMealType, setSelectedMealType] = useState('dinner');
+
+  const handleAdd = async () => {
+    if (!selectedRecipeId || !selectedDate) return;
+    try {
+      const res = await fetch('/api/meal-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipe_id: selectedRecipeId, date: selectedDate, meal_type: selectedMealType }),
+      });
+      if (res.ok) {
+        onUpdate();
+        setSelectedRecipeId('');
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      const res = await fetch(`/api/meal-plan/${id}`, { method: 'DELETE' });
+      if (res.ok) onUpdate();
+    } catch (err) { console.error(err); }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
+        <h2 className="text-2xl font-semibold mb-6 flex items-center gap-2">
+          <Calendar className="text-emerald-600" /> Meal Planner
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+          <select 
+            value={selectedRecipeId} 
+            onChange={(e) => setSelectedRecipeId(e.target.value)}
+            className="px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="">Select Recipe...</option>
+            {library.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <input 
+            type="date" 
+            value={selectedDate} 
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <select 
+            value={selectedMealType} 
+            onChange={(e) => setSelectedMealType(e.target.value)}
+            className="px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="breakfast">Breakfast</option>
+            <option value="lunch">Lunch</option>
+            <option value="dinner">Dinner</option>
+            <option value="snack">Snack</option>
+          </select>
+          <button 
+            onClick={handleAdd}
+            className="bg-emerald-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
+          >
+            <Plus size={18} /> Add to Plan
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {mealPlans.length === 0 ? (
+            <p className="text-center py-12 text-stone-400 italic">No meals planned yet.</p>
+          ) : (
+            mealPlans.map(plan => (
+              <div key={plan.id} className="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-100">
+                <div>
+                  <p className="font-semibold text-stone-800">{plan.recipe_name}</p>
+                  <p className="text-xs text-stone-500 uppercase font-bold tracking-wider">{plan.date} • {plan.meal_type}</p>
+                </div>
+                <button onClick={() => handleDelete(plan.id)} className="text-stone-300 hover:text-red-500 transition-colors">
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function ShoppingList({ library, shoppingList, setShoppingList, isGenerating, setIsGenerating }: any) {
+  const [selectedRecipes, setSelectedRecipes] = useState<string[]>([]);
+
+  const handleGenerate = async () => {
+    if (selectedRecipes.length === 0) return;
+    setIsGenerating(true);
+    try {
+      const res = await fetch(`/api/shopping-list?recipe_ids=${selectedRecipes.join(',')}`);
+      if (res.ok) setShoppingList(await res.json());
+    } catch (err) { console.error(err); }
+    setIsGenerating(false);
+  };
+
+  const toggleRecipe = (id: string) => {
+    setSelectedRecipes(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
+        <h2 className="text-2xl font-semibold mb-6 flex items-center gap-2">
+          <ShoppingCart className="text-emerald-600" /> Smart Shopping List
+        </h2>
+        
+        <div className="mb-8">
+          <p className="text-sm font-medium text-stone-500 mb-3 uppercase tracking-wider">Select recipes to include:</p>
+          <div className="flex flex-wrap gap-2">
+            {library.map((r: any) => (
+              <button
+                key={r.id}
+                onClick={() => toggleRecipe(r.id)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all border ${selectedRecipes.includes(r.id) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-stone-600 border-stone-200 hover:border-emerald-500'}`}
+              >
+                {r.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <button 
+          onClick={handleGenerate}
+          disabled={isGenerating || selectedRecipes.length === 0}
+          className="w-full bg-stone-900 text-white py-4 rounded-2xl font-bold hover:bg-stone-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mb-8"
+        >
+          {isGenerating ? <Loader2 className="animate-spin" /> : <Zap size={18} />}
+          {isGenerating ? 'Consolidating with Gemini...' : 'Generate Smart List'}
+        </button>
+
+        {shoppingList.length > 0 && (
+          <div className="space-y-3 bg-stone-50 p-6 rounded-2xl border border-stone-100">
+            {shoppingList.map((item: string, i: number) => (
+              <div key={i} className="flex items-center gap-3">
+                <input type="checkbox" className="w-5 h-5 accent-emerald-600 rounded" />
+                <span className="text-stone-700">{item}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function Collections({ collections, onUpdate, library, setSelectedCollectionId, setActiveTab }: any) {
+  const [name, setName] = useState('');
+  const [desc, setDesc] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+
+  const handleAdd = async () => {
+    if (!name) return;
+    try {
+      const res = await fetch('/api/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: desc }),
+      });
+      if (res.ok) {
+        onUpdate();
+        setName('');
+        setDesc('');
+        setIsAdding(false);
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this collection? Recipes will remain but be unassigned.")) return;
+    try {
+      const res = await fetch(`/api/collections/${id}`, { method: 'DELETE' });
+      if (res.ok) onUpdate();
+    } catch (err) { console.error(err); }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold flex items-center gap-2">
+          <FolderHeart className="text-emerald-600" /> Recipe Collections
+        </h2>
+        <button 
+          onClick={() => setIsAdding(!isAdding)}
+          className="bg-emerald-600 text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2"
+        >
+          {isAdding ? <X size={18} /> : <Plus size={18} />}
+          {isAdding ? 'Cancel' : 'New Collection'}
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {isAdding && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-4">
+              <input 
+                placeholder="Collection Name" 
+                value={name} onChange={(e) => setName(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <textarea 
+                placeholder="Description (Optional)" 
+                value={desc} onChange={(e) => setDesc(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-emerald-500 h-24"
+              />
+              <button onClick={handleAdd} className="w-full bg-stone-900 text-white py-3 rounded-xl font-bold">Create Collection</button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div 
+          onClick={() => { setSelectedCollectionId(null); setActiveTab('library'); }}
+          className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm hover:border-emerald-500 transition-all cursor-pointer group"
+        >
+          <div className="w-12 h-12 bg-stone-100 rounded-2xl flex items-center justify-center text-stone-400 mb-4 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
+            <BookOpen size={24} />
+          </div>
+          <h3 className="text-lg font-bold mb-1">All Recipes</h3>
+          <p className="text-sm text-stone-500">{library.length} recipes</p>
+        </div>
+
+        {collections.map((c: any) => (
+          <div 
+            key={c.id}
+            className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm hover:border-emerald-500 transition-all cursor-pointer group relative"
+            onClick={() => { setSelectedCollectionId(c.id); setActiveTab('library'); }}
+          >
+            <button 
+              onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}
+              className="absolute top-4 right-4 text-stone-300 hover:text-red-500 transition-colors"
+            >
+              <Trash2 size={16} />
+            </button>
+            <div className="w-12 h-12 bg-stone-100 rounded-2xl flex items-center justify-center text-stone-400 mb-4 group-hover:bg-emerald-50 group-hover:text-emerald-600 transition-colors">
+              <FolderHeart size={24} />
+            </div>
+            <h3 className="text-lg font-bold mb-1">{c.name}</h3>
+            <p className="text-sm text-stone-500 line-clamp-1">{c.description || 'No description'}</p>
+            <p className="text-xs text-stone-400 mt-2 font-bold uppercase tracking-widest">
+              {library.filter((r: any) => r.collection_id === c.id).length} recipes
+            </p>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+function PrintView({ recipe, onClose }: { recipe: SavedRecipe, onClose: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(() => window.print(), 500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="fixed inset-0 bg-white z-[100] overflow-auto p-12 print:p-0">
+      <div className="max-w-3xl mx-auto">
+        <button onClick={onClose} className="print:hidden mb-8 flex items-center gap-2 text-stone-500 hover:text-stone-800 transition-colors">
+          <ChevronLeft size={20} /> Back to Library
+        </button>
+        
+        <div className="border-b-2 border-stone-900 pb-8 mb-8">
+          <h1 className="text-5xl font-bold mb-4">{recipe.name}</h1>
+          <p className="text-xl text-stone-600 italic">{recipe.description}</p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
+          <div className="md:col-span-1">
+            <h2 className="text-xl font-bold uppercase tracking-widest mb-6 border-b border-stone-200 pb-2">Ingredients</h2>
+            <ul className="space-y-4">
+              {recipe.ingredients.map((ing, i) => (
+                <li key={i} className="flex items-start gap-3">
+                  <div className="w-5 h-5 border border-stone-300 rounded mt-0.5 flex-shrink-0" />
+                  <span className="text-stone-800">{ing}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="md:col-span-2">
+            <h2 className="text-xl font-bold uppercase tracking-widest mb-6 border-b border-stone-200 pb-2">Instructions</h2>
+            <ol className="space-y-6">
+              {recipe.instructions.map((inst, i) => (
+                <li key={i} className="flex gap-4">
+                  <span className="text-2xl font-bold text-stone-300">{i + 1}</span>
+                  <span className="text-stone-800 leading-relaxed">{inst}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </div>
+
+        {recipe.nutrition_info && (
+          <div className="mt-12 pt-8 border-t border-stone-200">
+            <h2 className="text-xl font-bold uppercase tracking-widest mb-6">Estimated Nutrition</h2>
+            <div className="grid grid-cols-4 gap-4">
+              {Object.entries(JSON.parse(recipe.nutrition_info)).map(([key, val]: any) => (
+                <div key={key} className="bg-stone-50 p-4 rounded-xl text-center">
+                  <p className="text-xs text-stone-500 uppercase font-bold tracking-wider mb-1">{key}</p>
+                  <p className="text-lg font-bold text-stone-800">{val}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

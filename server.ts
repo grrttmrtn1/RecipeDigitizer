@@ -70,14 +70,52 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS meal_plan (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    recipe_id TEXT NOT NULL,
+    date TEXT NOT NULL, -- YYYY-MM-DD
+    meal_type TEXT, -- 'breakfast', 'lunch', 'dinner', 'snack'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(recipe_id) REFERENCES recipes(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS recipe_images (
+    id TEXT PRIMARY KEY,
+    recipe_id TEXT NOT NULL,
+    image_data TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    page_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(recipe_id) REFERENCES recipes(id)
+  );
 `);
 
 // Migration: Add tags column to recipes if it doesn't exist
 try {
   db.prepare("ALTER TABLE recipes ADD COLUMN tags TEXT").run();
-} catch (e) {
-  // Column likely already exists
-}
+} catch (e) {}
+
+// Migration: Add collection_id to recipes
+try {
+  db.prepare("ALTER TABLE recipes ADD COLUMN collection_id TEXT").run();
+} catch (e) {}
+
+// Migration: Add nutrition_info to recipes
+try {
+  db.prepare("ALTER TABLE recipes ADD COLUMN nutrition_info TEXT").run();
+} catch (e) {}
 
 // Migration: Check if id column is INTEGER (old schema)
 const tableInfo = db.prepare("PRAGMA table_info(users)").all();
@@ -510,10 +548,91 @@ async function startServer() {
     res.json(logs);
   });
 
+  // Collections Routes
+  app.get("/api/collections", isAuthenticated, (req: any, res) => {
+    try {
+      const collections = db.prepare("SELECT * FROM collections WHERE user_id = ? OR ? = 'admin' ORDER BY name ASC")
+        .all(req.session.userId, req.session.role);
+      res.json(collections);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch collections" });
+    }
+  });
+
+  app.post("/api/collections", isAuthenticated, (req: any, res) => {
+    const { name, description } = req.body;
+    try {
+      const id = randomUUID();
+      db.prepare("INSERT INTO collections (id, user_id, name, description) VALUES (?, ?, ?, ?)")
+        .run(id, req.session.userId, name, description);
+      res.json({ id, name, description });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to create collection" });
+    }
+  });
+
+  app.delete("/api/collections/:id", isAuthenticated, (req: any, res) => {
+    try {
+      const collection: any = db.prepare("SELECT user_id FROM collections WHERE id = ?").get(req.params.id);
+      if (!collection) return res.status(404).json({ error: "Collection not found" });
+      if (req.session.role !== 'admin' && collection.user_id !== req.session.userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      db.prepare("DELETE FROM collections WHERE id = ?").run(req.params.id);
+      // Unset collection_id for recipes in this collection
+      db.prepare("UPDATE recipes SET collection_id = NULL WHERE collection_id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete collection" });
+    }
+  });
+
+  // Meal Plan Routes
+  app.get("/api/meal-plan", isAuthenticated, (req: any, res) => {
+    try {
+      const plans = db.prepare(`
+        SELECT mp.*, r.name as recipe_name 
+        FROM meal_plan mp 
+        JOIN recipes r ON mp.recipe_id = r.id 
+        WHERE mp.user_id = ? OR ? = 'admin'
+        ORDER BY mp.date ASC
+      `).all(req.session.userId, req.session.role);
+      res.json(plans);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch meal plan" });
+    }
+  });
+
+  app.post("/api/meal-plan", isAuthenticated, (req: any, res) => {
+    const { recipe_id, date, meal_type } = req.body;
+    try {
+      const id = randomUUID();
+      db.prepare("INSERT INTO meal_plan (id, user_id, recipe_id, date, meal_type) VALUES (?, ?, ?, ?, ?)")
+        .run(id, req.session.userId, recipe_id, date, meal_type);
+      res.json({ id, recipe_id, date, meal_type });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to add to meal plan" });
+    }
+  });
+
+  app.delete("/api/meal-plan/:id", isAuthenticated, (req: any, res) => {
+    try {
+      const plan: any = db.prepare("SELECT user_id FROM meal_plan WHERE id = ?").get(req.params.id);
+      if (!plan) return res.status(404).json({ error: "Meal plan entry not found" });
+      if (req.session.role !== 'admin' && plan.user_id !== req.session.userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      db.prepare("DELETE FROM meal_plan WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete meal plan entry" });
+    }
+  });
+
   // Recipe Routes
   app.get("/api/recipes", isAuthenticated, (req: any, res) => {
     try {
-      const { search, tag } = req.query;
+      const { search, tag, collection_id } = req.query;
       let query = "SELECT * FROM recipes";
       let params: any[] = [];
       let conditions: string[] = [];
@@ -533,12 +652,24 @@ async function startServer() {
         params.push(`%${tag}%`);
       }
 
+      if (collection_id) {
+        conditions.push("collection_id = ?");
+        params.push(collection_id);
+      }
+
       if (conditions.length > 0) {
         query += " WHERE " + conditions.join(" AND ");
       }
 
       query += " ORDER BY created_at DESC";
       const recipes = db.prepare(query).all(...params);
+      
+      // Attach additional images
+      for (const recipe of recipes as any[]) {
+        recipe.additional_images = db.prepare("SELECT image_data, mime_type FROM recipe_images WHERE recipe_id = ? ORDER BY page_order ASC")
+          .all(recipe.id);
+      }
+      
       res.json(recipes);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch recipes" });
@@ -548,14 +679,21 @@ async function startServer() {
   app.post("/api/recipes", isAuthenticated, (req: any, res) => {
     if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
     
-    const { name, description, ingredients, instructions, image_data, mime_type, tags } = req.body;
+    const { name, description, ingredients, instructions, image_data, mime_type, tags, collection_id, additional_images } = req.body;
     try {
       const id = randomUUID();
       db.prepare(`
-        INSERT INTO recipes (id, user_id, name, description, ingredients, instructions, image_data, mime_type, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, req.session.userId, name, description, JSON.stringify(ingredients), JSON.stringify(instructions), image_data, mime_type, JSON.stringify(tags || []));
+        INSERT INTO recipes (id, user_id, name, description, ingredients, instructions, image_data, mime_type, tags, collection_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, req.session.userId, name, description, JSON.stringify(ingredients), JSON.stringify(instructions), image_data, mime_type, JSON.stringify(tags || []), collection_id || null);
       
+      if (additional_images && Array.isArray(additional_images)) {
+        const insertImage = db.prepare("INSERT INTO recipe_images (id, recipe_id, image_data, mime_type, page_order) VALUES (?, ?, ?, ?, ?)");
+        additional_images.forEach((img: any, index: number) => {
+          insertImage.run(randomUUID(), id, img.image_data, img.mime_type, index);
+        });
+      }
+
       logAction(req.session.userId, "RECIPE_CREATE", { recipe_id: id, name }, req);
       res.json({ id });
     } catch (error) {
@@ -566,7 +704,7 @@ async function startServer() {
   app.put("/api/recipes/:id", isAuthenticated, (req: any, res) => {
     if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
     
-    const { name, description, ingredients, instructions, tags } = req.body;
+    const { name, description, ingredients, instructions, tags, collection_id, additional_images } = req.body;
     try {
       const recipe: any = db.prepare("SELECT user_id FROM recipes WHERE id = ?").get(req.params.id);
       if (!recipe) return res.status(404).json({ error: "Recipe not found" });
@@ -576,10 +714,18 @@ async function startServer() {
 
       db.prepare(`
         UPDATE recipes 
-        SET name = ?, description = ?, ingredients = ?, instructions = ?, tags = ?
+        SET name = ?, description = ?, ingredients = ?, instructions = ?, tags = ?, collection_id = ?
         WHERE id = ?
-      `).run(name, description, JSON.stringify(ingredients), JSON.stringify(instructions), JSON.stringify(tags || []), req.params.id);
+      `).run(name, description, JSON.stringify(ingredients), JSON.stringify(instructions), JSON.stringify(tags || []), collection_id || null, req.params.id);
       
+      if (additional_images && Array.isArray(additional_images)) {
+        db.prepare("DELETE FROM recipe_images WHERE recipe_id = ?").run(req.params.id);
+        const insertImage = db.prepare("INSERT INTO recipe_images (id, recipe_id, image_data, mime_type, page_order) VALUES (?, ?, ?, ?, ?)");
+        additional_images.forEach((img: any, index: number) => {
+          insertImage.run(randomUUID(), req.params.id, img.image_data, img.mime_type, index);
+        });
+      }
+
       logAction(req.session.userId, "RECIPE_UPDATE", { recipe_id: req.params.id, name }, req);
       res.json({ success: true });
     } catch (error) {
@@ -631,6 +777,48 @@ async function startServer() {
       res.send(markdown);
     } catch (error) {
       res.status(500).json({ error: "Failed to export recipe" });
+    }
+  });
+
+  app.post("/api/recipes/:id/nutrition", isAuthenticated, async (req: any, res) => {
+    try {
+      const recipe: any = db.prepare("SELECT * FROM recipes WHERE id = ?").get(req.params.id);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+      
+      // Nutrition analysis logic will be handled by Gemini
+      // For now, we'll just return a placeholder or call a service
+      // I'll implement the actual service call in gemini.ts
+      const { analyzeNutrition } = await import("./src/services/gemini.js");
+      const nutrition = await analyzeNutrition({
+        name: recipe.name,
+        ingredients: JSON.parse(recipe.ingredients),
+        instructions: JSON.parse(recipe.instructions)
+      });
+
+      db.prepare("UPDATE recipes SET nutrition_info = ? WHERE id = ?").run(JSON.stringify(nutrition), req.params.id);
+      res.json(nutrition);
+    } catch (error) {
+      console.error("Nutrition analysis failed:", error);
+      res.status(500).json({ error: "Failed to analyze nutrition" });
+    }
+  });
+
+  app.get("/api/shopping-list", isAuthenticated, async (req: any, res) => {
+    try {
+      const { recipe_ids } = req.query;
+      if (!recipe_ids) return res.json([]);
+      
+      const ids = (recipe_ids as string).split(",");
+      const recipes = db.prepare(`SELECT * FROM recipes WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
+      
+      const { consolidateShoppingList } = await import("./src/services/gemini.js");
+      const ingredientsList = recipes.map((r: any) => JSON.parse(r.ingredients));
+      const shoppingList = await consolidateShoppingList(ingredientsList);
+      
+      res.json(shoppingList);
+    } catch (error) {
+      console.error("Shopping list generation failed:", error);
+      res.status(500).json({ error: "Failed to generate shopping list" });
     }
   });
 
