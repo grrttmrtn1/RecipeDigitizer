@@ -117,6 +117,16 @@ try {
   db.prepare("ALTER TABLE recipes ADD COLUMN nutrition_info TEXT").run();
 } catch (e) {}
 
+// Migration: Add public_token to recipes
+try {
+  db.prepare("ALTER TABLE recipes ADD COLUMN public_token TEXT").run();
+} catch (e) {}
+
+// Migration: Add servings to recipes
+try {
+  db.prepare("ALTER TABLE recipes ADD COLUMN servings INTEGER DEFAULT 1").run();
+} catch (e) {}
+
 // Migration: Check if id column is INTEGER (old schema)
 const tableInfo = db.prepare("PRAGMA table_info(users)").all();
 const idColumn: any = tableInfo.find((c: any) => c.name === 'id');
@@ -747,6 +757,37 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to delete recipe" });
+    }
+  });
+
+  // Public Recipe Route
+  app.get("/api/public/recipe/:token", (req, res) => {
+    try {
+      const recipe: any = db.prepare("SELECT * FROM recipes WHERE public_token = ?").get(req.params.token);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+      
+      recipe.additional_images = db.prepare("SELECT image_data, mime_type FROM recipe_images WHERE recipe_id = ? ORDER BY page_order ASC")
+        .all(recipe.id);
+      
+      res.json(recipe);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch public recipe" });
+    }
+  });
+
+  app.post("/api/recipes/:id/share", isAuthenticated, (req: any, res) => {
+    try {
+      const recipe: any = db.prepare("SELECT user_id FROM recipes WHERE id = ?").get(req.params.id);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+      if (req.session.role !== 'admin' && recipe.user_id !== req.session.userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const token = randomUUID();
+      db.prepare("UPDATE recipes SET public_token = ? WHERE id = ?").run(token, req.params.id);
+      res.json({ token });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to share recipe" });
     }
   });
 

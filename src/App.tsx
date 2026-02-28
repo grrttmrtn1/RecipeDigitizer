@@ -31,10 +31,19 @@ import {
   FolderHeart,
   Printer,
   Zap,
-  Layers
+  Layers,
+  Share2,
+  Moon,
+  Sun,
+  Scale,
+  Clock,
+  Globe,
+  Timer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, RecipeData } from "./services/gemini";
+
+const randomUUID = () => crypto.randomUUID();
 
 interface UserProfile {
   id: string;
@@ -52,6 +61,7 @@ interface SavedRecipe extends RecipeData {
   collection_id?: string;
   nutrition_info?: string; // JSON string
   additional_images?: { image_data: string, mime_type: string }[];
+  public_token?: string;
   created_at: string;
 }
 
@@ -93,7 +103,20 @@ export default function App() {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
   const [printRecipe, setPrintRecipe] = useState<SavedRecipe | null>(null);
+  const [viewRecipe, setViewRecipe] = useState<SavedRecipe | null>(null);
   
+  // New Features State
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('theme') === 'dark' || 
+        (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+    return false;
+  });
+  const [unitSystem, setUnitSystem] = useState<'metric' | 'imperial'>('metric');
+  const [publicRecipe, setPublicRecipe] = useState<SavedRecipe | null>(null);
+  const [activeTimer, setActiveTimer] = useState<{ id: string, seconds: number, label: string } | null>(null);
+
   // Auth State
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(true);
@@ -159,6 +182,88 @@ export default function App() {
     } catch (err) {
       console.error("Failed to fetch password requirements", err);
     }
+  };
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('share');
+    if (token) {
+      fetchPublicRecipe(token);
+    }
+  }, []);
+
+  const fetchPublicRecipe = async (token: string) => {
+    try {
+      const res = await fetch(`/api/public/recipe/${token}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPublicRecipe({
+          ...data,
+          ingredients: JSON.parse(data.ingredients),
+          instructions: JSON.parse(data.instructions),
+          tags: JSON.parse(data.tags || '[]')
+        });
+      }
+    } catch (err) { console.error("Failed to fetch public recipe", err); }
+  };
+
+  const scaleIngredient = (ingredient: string, currentServings: number, targetServings: number) => {
+    if (!currentServings || !targetServings || currentServings === targetServings) return ingredient;
+    const ratio = targetServings / currentServings;
+    
+    // Simple regex to find numbers at the start or within the string
+    return ingredient.replace(/(\d+(\.\d+)?)/g, (match) => {
+      const num = parseFloat(match);
+      if (isNaN(num)) return match;
+      const scaled = num * ratio;
+      return scaled % 1 === 0 ? scaled.toString() : scaled.toFixed(2);
+    });
+  };
+
+  const convertUnits = (ingredient: string, to: 'metric' | 'imperial') => {
+    // Basic conversion map
+    const conversions: any = {
+      metric: {
+        'oz': { factor: 28.35, unit: 'g' },
+        'lb': { factor: 453.59, unit: 'g' },
+        'cup': { factor: 236.58, unit: 'ml' },
+        'tsp': { factor: 4.92, unit: 'ml' },
+        'tbsp': { factor: 14.78, unit: 'ml' },
+        'quart': { factor: 946.35, unit: 'ml' },
+        'gallon': { factor: 3.78, unit: 'l' },
+      },
+      imperial: {
+        'g': { factor: 0.035, unit: 'oz' },
+        'kg': { factor: 2.204, unit: 'lb' },
+        'ml': { factor: 0.033, unit: 'oz' },
+        'l': { factor: 0.264, unit: 'gallon' },
+      }
+    };
+
+    let result = ingredient;
+    const currentConversions = conversions[to];
+    
+    Object.keys(currentConversions).forEach(unit => {
+      const regex = new RegExp(`(\\d+(\\.\\d+)?)\\s*(${unit}s?)\\b`, 'gi');
+      result = result.replace(regex, (match, val) => {
+        const num = parseFloat(val);
+        const conv = currentConversions[unit];
+        const converted = (num * conv.factor).toFixed(1);
+        return `${converted} ${conv.unit}`;
+      });
+    });
+
+    return result;
   };
 
   const checkAuth = async () => {
@@ -488,6 +593,10 @@ export default function App() {
     }
   };
 
+  if (publicRecipe) {
+    return <PublicRecipeView recipe={publicRecipe} onClose={() => setPublicRecipe(null)} />;
+  }
+
   if (isAuthenticating) {
     return (
       <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center">
@@ -498,23 +607,23 @@ export default function App() {
 
   if (showPasswordChange) {
     return (
-      <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#FDFCFB] dark:bg-stone-950 flex items-center justify-center p-4">
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-xl max-w-md w-full"
+          className="bg-white dark:bg-stone-900 p-8 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-xl max-w-md w-full"
         >
           <div className="flex flex-col items-center mb-8">
             <div className="w-16 h-16 bg-amber-500 rounded-2xl flex items-center justify-center text-white mb-4">
               <Lock size={32} />
             </div>
-            <h1 className="text-2xl font-serif font-medium">Password Change Required</h1>
-            <p className="text-stone-500 text-sm mt-1 text-center">For security reasons, you must change your password before continuing.</p>
+            <h1 className="text-2xl font-serif font-medium dark:text-white">Password Change Required</h1>
+            <p className="text-stone-500 dark:text-stone-400 text-sm mt-1 text-center">For security reasons, you must change your password before continuing.</p>
           </div>
 
           <form onSubmit={handlePasswordChange} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">New Password</label>
+              <label className="text-sm font-medium text-stone-700 dark:text-stone-300">New Password</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
                 <input 
@@ -522,7 +631,7 @@ export default function App() {
                   required
                   value={newPasswordValue}
                   onChange={(e) => setNewPasswordValue(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 dark:border-stone-700 dark:bg-stone-800 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
                   placeholder="New Password"
                 />
               </div>
@@ -537,7 +646,7 @@ export default function App() {
             {passwordChangeError && <p className="text-red-500 text-sm text-center">{passwordChangeError}</p>}
             <button 
               type="submit"
-              className="w-full py-3 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors shadow-lg"
+              className="w-full py-3 bg-stone-900 dark:bg-emerald-600 text-white rounded-xl font-medium hover:bg-stone-800 dark:hover:bg-emerald-700 transition-colors shadow-lg"
             >
               Update Password
             </button>
@@ -549,21 +658,21 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#FDFCFB] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-[#FDFCFB] dark:bg-stone-950 flex items-center justify-center p-4">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-xl max-w-md w-full"
+          className="bg-white dark:bg-stone-900 p-8 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-xl max-w-md w-full"
         >
           <div className="flex flex-col items-center mb-8">
             <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white font-bold text-3xl mb-4">R</div>
-            <h1 className="text-2xl font-serif font-medium">RecipeDigitizer</h1>
-            <p className="text-stone-500 text-sm mt-1">Sign in to manage your recipes</p>
+            <h1 className="text-2xl font-serif font-medium dark:text-white">RecipeDigitizer</h1>
+            <p className="text-stone-500 dark:text-stone-400 text-sm mt-1">Sign in to manage your recipes</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">Username</label>
+              <label className="text-sm font-medium text-stone-700 dark:text-stone-300">Username</label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
                 <input 
@@ -571,13 +680,13 @@ export default function App() {
                   required
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 dark:border-stone-700 dark:bg-stone-800 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
                   placeholder="admin"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">Password</label>
+              <label className="text-sm font-medium text-stone-700 dark:text-stone-300">Password</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
                 <input 
@@ -585,7 +694,7 @@ export default function App() {
                   required
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-200 dark:border-stone-700 dark:bg-stone-800 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
                   placeholder="••••••••"
                 />
               </div>
@@ -598,7 +707,7 @@ export default function App() {
               Sign In
             </button>
           </form>
-          <div className="mt-8 pt-6 border-t border-stone-100 text-center">
+          <div className="mt-8 pt-6 border-t border-stone-100 dark:border-stone-800 text-center">
             <p className="text-xs text-stone-400">Default credentials: admin / Admin@12345</p>
           </div>
         </motion.div>
@@ -607,15 +716,15 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FDFCFB] text-stone-900 font-sans">
+    <div className="min-h-screen bg-[#FDFCFB] dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans transition-colors">
       {/* Navigation */}
-      <nav className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md border-b border-stone-200 z-50">
+      <nav className="fixed top-0 left-0 right-0 bg-white/80 dark:bg-stone-900/80 backdrop-blur-md border-b border-stone-200 dark:border-stone-800 z-50">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-bold">R</div>
-            <h1 className="text-xl font-semibold tracking-tight">RecipeDigitizer</h1>
+            <h1 className="text-xl font-semibold tracking-tight dark:text-white">RecipeDigitizer</h1>
           </div>
-          <div className="flex gap-1 overflow-x-auto no-scrollbar">
+          <div className="flex gap-1 overflow-x-auto no-scrollbar items-center">
             <NavButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} icon={<Upload size={18} />} label="Upload" />
             <NavButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<BookOpen size={18} />} label="Library" />
             <NavButton active={activeTab === 'collections'} onClick={() => setActiveTab('collections')} icon={<FolderHeart size={18} />} label="Collections" />
@@ -628,9 +737,20 @@ export default function App() {
                 <NavButton active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<History size={18} />} label="Logs" />
               </>
             )}
+            
+            <div className="h-6 w-px bg-stone-200 dark:bg-stone-800 mx-2" />
+            
+            <button 
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="p-2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition-colors"
+              title={isDarkMode ? "Light Mode" : "Dark Mode"}
+            >
+              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+
             <button 
               onClick={handleLogout}
-              className="p-2 text-stone-400 hover:text-stone-600 transition-colors ml-2 flex-shrink-0"
+              className="p-2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition-colors flex-shrink-0"
               title="Sign Out"
             >
               <LogOut size={20} />
@@ -641,6 +761,22 @@ export default function App() {
 
       {isPrinting && printRecipe && (
         <PrintView recipe={printRecipe} onClose={() => setIsPrinting(false)} />
+      )}
+
+      {viewRecipe && (
+        <RecipeViewer 
+          recipe={viewRecipe} 
+          onClose={() => setViewRecipe(null)} 
+          scaleIngredient={scaleIngredient}
+          convertUnits={convertUnits}
+          unitSystem={unitSystem}
+          setUnitSystem={setUnitSystem}
+          setActiveTimer={setActiveTimer}
+        />
+      )}
+
+      {activeTimer && (
+        <TimerWidget timer={activeTimer} onCancel={() => setActiveTimer(null)} />
       )}
 
       <main className="pt-24 pb-12 max-w-6xl mx-auto px-4">
@@ -991,8 +1127,14 @@ export default function App() {
 
                         <div className="flex gap-2">
                           <button 
+                            onClick={() => setViewRecipe(recipe)}
+                            className="flex-1 py-2 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 rounded-xl text-sm font-medium hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+                          >
+                            View Details
+                          </button>
+                          <button 
                             onClick={() => {
-                              // Load into editor/viewer
+                              // Load into editor
                               setPendingUploads([{
                                 id: randomUUID(),
                                 files: [{
@@ -1005,19 +1147,21 @@ export default function App() {
                                   description: recipe.description,
                                   ingredients: recipe.ingredients,
                                   instructions: recipe.instructions,
-                                  tags: recipe.tags
+                                  tags: recipe.tags,
+                                  servings: recipe.servings
                                 }
                               }]);
                               setCurrentIndex(0);
                               setActiveTab('upload');
                             }}
-                            className="flex-1 py-2 bg-stone-100 text-stone-700 rounded-xl text-sm font-medium hover:bg-stone-200 transition-colors"
+                            className="p-2 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 rounded-xl hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+                            title="Edit Recipe"
                           >
-                            View Details
+                            <Settings size={18} />
                           </button>
                           <button 
                             onClick={() => submitToMealie(recipe)}
-                            className="p-2 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-100 transition-colors"
+                            className="p-2 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-xl hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
                             title="Submit to Mealie"
                           >
                             <ExternalLink size={18} />
@@ -1282,11 +1426,11 @@ function AuditLogs() {
         </button>
       </div>
 
-      <div className="bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-sm">
+      <div className="bg-white dark:bg-stone-900 rounded-3xl border border-stone-200 dark:border-stone-800 overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-stone-50 border-b border-stone-200">
+              <tr className="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
                 <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">Timestamp</th>
                 <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">User</th>
                 <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">Action</th>
@@ -1294,7 +1438,7 @@ function AuditLogs() {
                 <th className="px-6 py-4 text-xs font-bold text-stone-400 uppercase tracking-wider">IP Address</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-stone-100">
+            <tbody className="divide-y divide-stone-100 dark:divide-stone-800">
               {logs.length === 0 && !isLoading ? (
                 <tr>
                   <td colSpan={5} className="px-6 py-12 text-center text-stone-400 italic">
@@ -1302,24 +1446,24 @@ function AuditLogs() {
                   </td>
                 </tr>
               ) : logs.map((log) => (
-                <tr key={log.id} className="hover:bg-stone-50 transition-colors">
-                  <td className="px-6 py-4 text-sm text-stone-600 whitespace-nowrap">
+                <tr key={log.id} className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+                  <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 whitespace-nowrap">
                     {new Date(log.created_at).toLocaleString()}
                   </td>
-                  <td className="px-6 py-4 text-sm font-medium text-stone-900">
+                  <td className="px-6 py-4 text-sm font-medium text-stone-900 dark:text-white">
                     {log.username || 'System'}
                   </td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
-                      log.action.includes('DELETE') ? 'bg-red-50 text-red-600' :
-                      log.action.includes('CREATE') ? 'bg-emerald-50 text-emerald-600' :
-                      log.action.includes('LOGIN') ? 'bg-blue-50 text-blue-600' :
-                      'bg-stone-100 text-stone-600'
+                      log.action.includes('DELETE') ? 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                      log.action.includes('CREATE') ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' :
+                      log.action.includes('LOGIN') ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' :
+                      'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400'
                     }`}>
                       {log.action}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-sm text-stone-500 max-w-xs truncate" title={log.details}>
+                  <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 max-w-xs truncate" title={log.details}>
                     {log.details}
                   </td>
                   <td className="px-6 py-4 text-sm text-stone-400 font-mono">
@@ -1339,11 +1483,50 @@ function NavButton({ active, onClick, icon, label }: { active: boolean, onClick:
   return (
     <button 
       onClick={onClick}
-      className={`px-4 py-2 rounded-xl flex items-center gap-2 font-medium transition-all ${active ? 'bg-emerald-50 text-emerald-700' : 'text-stone-500 hover:bg-stone-50'}`}
+      className={`px-4 py-2 rounded-xl flex items-center gap-2 font-medium transition-all ${active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'text-stone-500 hover:bg-stone-50 dark:text-stone-400 dark:hover:bg-stone-800'}`}
     >
       {icon}
       <span className="hidden sm:inline">{label}</span>
     </button>
+  );
+}
+
+function TimerWidget({ timer, onCancel }: { timer: { id: string, seconds: number, label: string }, onCancel: () => void }) {
+  const [timeLeft, setTimeLeft] = useState(timer.seconds);
+
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+      audio.play();
+      return;
+    }
+    const interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    return () => clearInterval(interval);
+  }, [timeLeft]);
+
+  const formatTime = (s: number) => {
+    const mins = Math.floor(s / 60);
+    const secs = s % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <motion.div 
+      initial={{ y: 50, opacity: 0 }} 
+      animate={{ y: 0, opacity: 1 }} 
+      className="fixed bottom-8 right-8 bg-stone-900 text-white p-6 rounded-3xl shadow-2xl z-[100] flex items-center gap-6 border border-stone-800"
+    >
+      <div className="w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center">
+        <Timer className={timeLeft > 0 ? "animate-pulse" : ""} />
+      </div>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-stone-400 mb-1">{timer.label}</p>
+        <p className="text-3xl font-mono font-bold">{formatTime(timeLeft)}</p>
+      </div>
+      <button onClick={onCancel} className="p-2 hover:bg-stone-800 rounded-full transition-colors">
+        <X size={20} />
+      </button>
+    </motion.div>
   );
 }
 
@@ -1364,24 +1547,35 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
   };
 
   return (
-    <div className="flex-1 flex flex-col space-y-6 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-stone-200">
-      <div className="space-y-2">
-        <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Recipe Name</label>
-        <input 
-          type="text" 
-          value={data.name}
-          onChange={(e) => onChange({ ...data, name: e.target.value })}
-          className="w-full text-2xl font-serif font-medium border-b border-stone-100 focus:border-emerald-500 outline-none pb-1 transition-colors"
-        />
+    <div className="flex-1 flex flex-col space-y-6 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-stone-200 dark:scrollbar-thumb-stone-800">
+      <div className="flex gap-6">
+        <div className="flex-1 space-y-2">
+          <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Recipe Name</label>
+          <input 
+            type="text" 
+            value={data.name}
+            onChange={(e) => onChange({ ...data, name: e.target.value })}
+            className="w-full text-2xl font-serif font-medium border-b border-stone-100 dark:border-stone-800 bg-transparent dark:text-white focus:border-emerald-500 outline-none pb-1 transition-colors"
+          />
+        </div>
+        <div className="w-24 space-y-2">
+          <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Servings</label>
+          <input 
+            type="number" 
+            value={data.servings || 1}
+            onChange={(e) => onChange({ ...data, servings: parseInt(e.target.value) || 1 })}
+            className="w-full text-xl font-medium border-b border-stone-100 dark:border-stone-800 bg-transparent dark:text-white focus:border-emerald-500 outline-none pb-1 transition-colors"
+          />
+        </div>
       </div>
 
       <div className="space-y-2">
         <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Tags</label>
         <div className="flex flex-wrap gap-2 mb-2">
           {(data.tags || []).map(tag => (
-            <span key={tag} className="px-2 py-1 bg-emerald-50 text-emerald-700 text-xs font-medium rounded-lg flex items-center gap-1">
+            <span key={tag} className="px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium rounded-lg flex items-center gap-1">
               {tag}
-              <button onClick={() => removeTag(tag)} className="hover:text-emerald-900">
+              <button onClick={() => removeTag(tag)} className="hover:text-emerald-900 dark:hover:text-emerald-200">
                 <X size={12} />
               </button>
             </span>
@@ -1394,11 +1588,11 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
             onChange={(e) => setNewTag(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addTag()}
             placeholder="Add a tag..."
-            className="flex-1 px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500"
+            className="flex-1 px-3 py-1.5 bg-stone-50 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 dark:text-white rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500"
           />
           <button 
             onClick={addTag}
-            className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-sm font-medium hover:bg-stone-800"
+            className="px-3 py-1.5 bg-stone-900 dark:bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-emerald-700"
           >
             Add
           </button>
@@ -1410,7 +1604,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
         <textarea 
           value={data.description}
           onChange={(e) => onChange({ ...data, description: e.target.value })}
-          className="w-full text-stone-600 resize-none outline-none min-h-[60px]"
+          className="w-full text-stone-600 dark:text-stone-300 bg-transparent resize-none outline-none min-h-[60px]"
           placeholder="Add a description or notes..."
         />
       </div>
@@ -1428,7 +1622,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
                   newIngs[i] = e.target.value;
                   onChange({ ...data, ingredients: newIngs });
                 }}
-                className="flex-1 px-3 py-2 bg-stone-50 rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500"
+                className="flex-1 px-3 py-2 bg-stone-50 dark:bg-stone-800 dark:text-white rounded-lg text-sm outline-none focus:ring-1 focus:ring-emerald-500"
               />
               <button 
                 onClick={() => {
@@ -1443,7 +1637,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
           ))}
           <button 
             onClick={() => onChange({ ...data, ingredients: [...data.ingredients, ""] })}
-            className="text-sm text-emerald-600 font-medium flex items-center gap-1 hover:text-emerald-700"
+            className="text-sm text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 hover:text-emerald-700 dark:hover:text-emerald-300"
           >
             <Plus size={14} /> Add Ingredient
           </button>
@@ -1455,7 +1649,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
         <div className="space-y-3">
           {data.instructions.map((inst, i) => (
             <div key={i} className="flex gap-3 group">
-              <span className="flex-shrink-0 w-6 h-6 bg-stone-100 text-stone-500 rounded-full flex items-center justify-center text-xs font-bold">{i + 1}</span>
+              <span className="flex-shrink-0 w-6 h-6 bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 rounded-full flex items-center justify-center text-xs font-bold">{i + 1}</span>
               <textarea 
                 value={inst}
                 onChange={(e) => {
@@ -1463,7 +1657,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
                   newInsts[i] = e.target.value;
                   onChange({ ...data, instructions: newInsts });
                 }}
-                className="flex-1 text-sm text-stone-700 outline-none resize-none min-h-[40px]"
+                className="flex-1 text-sm text-stone-700 dark:text-stone-300 bg-transparent outline-none resize-none min-h-[40px]"
               />
               <button 
                 onClick={() => {
@@ -1478,7 +1672,7 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
           ))}
           <button 
             onClick={() => onChange({ ...data, instructions: [...data.instructions, ""] })}
-            className="text-sm text-emerald-600 font-medium flex items-center gap-1 hover:text-emerald-700"
+            className="text-sm text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 hover:text-emerald-700 dark:hover:text-emerald-300"
           >
             <Plus size={14} /> Add Step
           </button>
@@ -2168,6 +2362,235 @@ function PrintView({ recipe, onClose }: { recipe: SavedRecipe, onClose: () => vo
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSystem, setUnitSystem, setActiveTimer }: { 
+  recipe: SavedRecipe, 
+  onClose: () => void, 
+  scaleIngredient: (ing: string, cur: number, tar: number) => string,
+  convertUnits: (ing: string, to: 'metric' | 'imperial') => string,
+  unitSystem: 'metric' | 'imperial',
+  setUnitSystem: (s: 'metric' | 'imperial') => void,
+  setActiveTimer: (t: any) => void
+}) {
+  const [targetServings, setTargetServings] = useState(recipe.servings || 1);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
+
+  const handleShare = async () => {
+    setIsSharing(true);
+    try {
+      const res = await fetch(`/api/recipes/${recipe.id}/share`, { method: 'POST', credentials: 'include' });
+      if (res.ok) {
+        const { token } = await res.json();
+        const url = `${window.location.origin}/?share=${token}`;
+        setShareUrl(url);
+        navigator.clipboard.writeText(url);
+      }
+    } catch (err) { console.error("Failed to share", err); }
+    finally { setIsSharing(false); }
+  };
+
+  const parseTimer = (text: string) => {
+    const parts = [];
+    const regex = /(\d+)\s*(minute|min|hour|hr)s?/gi;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      parts.push(text.substring(lastIndex, match.index));
+      const value = parseInt(match[1]);
+      const unit = match[2].toLowerCase();
+      const seconds = (unit.startsWith('m') ? value * 60 : value * 3600);
+      
+      parts.push(
+        <button 
+          key={match.index}
+          onClick={() => setActiveTimer({ id: randomUUID(), seconds, label: `Timer for ${match[0]}` })}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors mx-1"
+        >
+          <Clock size={12} />
+          {match[0]}
+        </button>
+      );
+      lastIndex = regex.lastIndex;
+    }
+    parts.push(text.substring(lastIndex));
+    return parts;
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4"
+    >
+      <motion.div 
+        initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
+        className="bg-white dark:bg-stone-900 w-full max-w-4xl max-h-[90vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl border border-stone-200 dark:border-stone-800"
+      >
+        <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between bg-stone-50/50 dark:bg-stone-800/50">
+          <div className="flex items-center gap-4">
+            <button onClick={onClose} className="p-2 hover:bg-stone-200 dark:hover:bg-stone-700 rounded-full transition-colors">
+              <X size={20} />
+            </button>
+            <h2 className="text-2xl font-serif font-medium dark:text-white">{recipe.name}</h2>
+          </div>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={handleShare}
+              className="px-4 py-2 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 rounded-xl text-sm font-medium hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors flex items-center gap-2"
+            >
+              <Share2 size={16} />
+              {shareUrl ? "Copied!" : "Share"}
+            </button>
+            <button 
+              onClick={() => window.print()}
+              className="p-2 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 rounded-xl hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+            >
+              <Printer size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
+            <div className="lg:col-span-1 space-y-8">
+              {recipe.image_data && (
+                <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
+                  <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                </div>
+              )}
+
+              <div className="space-y-6 bg-stone-50 dark:bg-stone-800/50 p-6 rounded-3xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Scaling</h3>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => setTargetServings(Math.max(1, targetServings - 1))}
+                      className="w-8 h-8 flex items-center justify-center bg-white dark:bg-stone-800 rounded-lg shadow-sm border border-stone-100 dark:border-stone-700"
+                    >-</button>
+                    <span className="font-bold w-8 text-center">{targetServings}</span>
+                    <button 
+                      onClick={() => setTargetServings(targetServings + 1)}
+                      className="w-8 h-8 flex items-center justify-center bg-white dark:bg-stone-800 rounded-lg shadow-sm border border-stone-100 dark:border-stone-700"
+                    >+</button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Units</h3>
+                  <div className="flex bg-white dark:bg-stone-800 p-1 rounded-xl shadow-sm border border-stone-100 dark:border-stone-700">
+                    <button 
+                      onClick={() => setUnitSystem('metric')}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase rounded-lg transition-all ${unitSystem === 'metric' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                    >Metric</button>
+                    <button 
+                      onClick={() => setUnitSystem('imperial')}
+                      className={`px-3 py-1 text-[10px] font-bold uppercase rounded-lg transition-all ${unitSystem === 'imperial' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                    >Imperial</button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Ingredients</h3>
+                <ul className="space-y-3">
+                  {recipe.ingredients.map((ing, i) => (
+                    <li key={i} className="text-sm text-stone-600 dark:text-stone-300 flex gap-3">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full mt-1.5 flex-shrink-0" />
+                      {convertUnits(scaleIngredient(ing, recipe.servings || 1, targetServings), unitSystem)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 space-y-8">
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Instructions</h3>
+                <div className="space-y-6">
+                  {recipe.instructions.map((inst, i) => (
+                    <div key={i} className="flex gap-4">
+                      <span className="flex-shrink-0 w-8 h-8 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center text-sm font-bold">{i + 1}</span>
+                      <p className="text-stone-700 dark:text-stone-200 leading-relaxed pt-1">
+                        {parseTimer(inst)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function PublicRecipeView({ recipe, onClose }: { recipe: SavedRecipe, onClose: () => void }) {
+  return (
+    <div className="min-h-screen bg-[#FDFCFB] dark:bg-stone-950 p-4 md:p-12">
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center justify-between mb-12">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white font-bold">R</div>
+            <h1 className="text-2xl font-semibold tracking-tight dark:text-white">RecipeDigitizer</h1>
+          </div>
+          <button 
+            onClick={onClose}
+            className="px-6 py-2 bg-stone-900 text-white rounded-xl font-medium hover:bg-stone-800 transition-colors"
+          >
+            Back to App
+          </button>
+        </div>
+
+        <div className="bg-white dark:bg-stone-900 rounded-[40px] shadow-xl border border-stone-100 dark:border-stone-800 overflow-hidden">
+          <div className="aspect-[21/9] bg-stone-100 dark:bg-stone-800 relative">
+            {recipe.image_data ? (
+              <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-stone-300">
+                <ImageIcon size={64} />
+              </div>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex flex-col justify-end p-12">
+              <h2 className="text-5xl font-serif font-medium text-white mb-2">{recipe.name}</h2>
+              <p className="text-white/80 max-w-2xl">{recipe.description}</p>
+            </div>
+          </div>
+
+          <div className="p-12 grid grid-cols-1 md:grid-cols-3 gap-16">
+            <div className="md:col-span-1 space-y-8">
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Ingredients</h3>
+                <ul className="space-y-4">
+                  {recipe.ingredients.map((ing, i) => (
+                    <li key={i} className="text-stone-600 dark:text-stone-300 flex gap-3">
+                      <span className="w-2 h-2 bg-emerald-500 rounded-full mt-2 flex-shrink-0" />
+                      {ing}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <div className="md:col-span-2 space-y-8">
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Instructions</h3>
+                <div className="space-y-8">
+                  {recipe.instructions.map((inst, i) => (
+                    <div key={i} className="flex gap-6">
+                      <span className="flex-shrink-0 w-10 h-10 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center text-lg font-bold">{i + 1}</span>
+                      <p className="text-stone-700 dark:text-stone-200 text-lg leading-relaxed pt-1">{inst}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

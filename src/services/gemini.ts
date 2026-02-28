@@ -8,6 +8,7 @@ export interface RecipeData {
   ingredients: string[];
   instructions: string[];
   tags?: string[];
+  servings?: number;
 }
 
 export async function extractRecipeFromImage(images: { base64Data: string, mimeType: string }[]): Promise<RecipeData> {
@@ -24,6 +25,7 @@ export async function extractRecipeFromImage(images: { base64Data: string, mimeT
     - description: A brief summary or notes about the recipe.
     - ingredients: A list of ingredients with their quantities.
     - instructions: A step-by-step list of instructions.
+    - servings: The number of servings this recipe makes (as a number).
   `;
 
   const imageParts = images.map(img => ({
@@ -56,6 +58,7 @@ export async function extractRecipeFromImage(images: { base64Data: string, mimeT
             type: Type.ARRAY,
             items: { type: Type.STRING },
           },
+          servings: { type: Type.NUMBER },
         },
         required: ["name", "ingredients", "instructions"],
       },
