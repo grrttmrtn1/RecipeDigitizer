@@ -581,9 +581,26 @@ export default function App() {
 
   const analyzeNutrition = async (id: string) => {
     try {
-      const res = await fetch(`/api/recipes/${id}/nutrition`, { method: 'POST' });
+      const recipe = library.find(r => r.id === id);
+      if (!recipe) return;
+
+      const { analyzeNutrition: analyze } = await import('./services/gemini');
+      const nutrition = await analyze({
+        name: recipe.name,
+        ingredients: recipe.ingredients,
+        instructions: recipe.instructions
+      });
+
+      const res = await fetch(`/api/recipes/${id}/nutrition`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nutrition)
+      });
       if (res.ok) fetchLibrary();
-    } catch (err) { console.error(err); }
+    } catch (err: any) { 
+      console.error("Nutrition analysis failed:", err);
+      alert(err.message || "Failed to analyze nutrition");
+    }
   };
 
   const submitToMealie = async (recipe: RecipeData) => {
@@ -1058,9 +1075,9 @@ export default function App() {
                   >
                     All
                   </button>
-                  {availableTags.map(tag => (
+                  {availableTags.map((tag, i) => (
                     <button 
-                      key={tag}
+                      key={`${tag}-${i}`}
                       onClick={() => setSelectedTag(tag === selectedTag ? null : tag)}
                       className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${tag === selectedTag ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
                     >
@@ -1144,8 +1161,8 @@ export default function App() {
                         
                         {recipe.tags && recipe.tags.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mb-4">
-                            {recipe.tags.map((tag: string) => (
-                              <span key={tag} className="px-2 py-0.5 bg-stone-50 text-stone-400 text-[10px] font-bold uppercase tracking-wider rounded border border-stone-100">
+                            {recipe.tags.map((tag: string, i: number) => (
+                              <span key={`${tag}-${i}`} className="px-2 py-0.5 bg-stone-50 text-stone-400 text-[10px] font-bold uppercase tracking-wider rounded border border-stone-100">
                                 {tag}
                               </span>
                             ))}
@@ -1524,8 +1541,8 @@ function AuditLogs() {
                     No audit logs found.
                   </td>
                 </tr>
-              ) : logs.map((log) => (
-                <tr key={log.id} className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+              ) : logs.map((log, i) => (
+                <tr key={log.id || i} className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
                   <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 whitespace-nowrap">
                     {new Date(log.created_at).toLocaleString()}
                   </td>
@@ -1651,8 +1668,8 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
       <div className="space-y-2">
         <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Tags</label>
         <div className="flex flex-wrap gap-2 mb-2">
-          {(data.tags || []).map(tag => (
-            <span key={tag} className="px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium rounded-lg flex items-center gap-1">
+          {(data.tags || []).map((tag, i) => (
+            <span key={`${tag}-${i}`} className="px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium rounded-lg flex items-center gap-1">
               {tag}
               <button onClick={() => removeTag(tag)} className="hover:text-emerald-900 dark:hover:text-emerald-200">
                 <X size={12} />
@@ -2225,9 +2242,17 @@ function ShoppingList({ library, shoppingList, setShoppingList, isGenerating, se
     if (selectedRecipes.length === 0) return;
     setIsGenerating(true);
     try {
-      const res = await fetch(`/api/shopping-list?recipe_ids=${selectedRecipes.join(',')}`);
-      if (res.ok) setShoppingList(await res.json());
-    } catch (err) { console.error(err); }
+      const selectedIngredients = library
+        .filter((r: any) => selectedRecipes.includes(r.id))
+        .map((r: any) => r.ingredients);
+      
+      const { consolidateShoppingList } = await import('./services/gemini');
+      const list = await consolidateShoppingList(selectedIngredients);
+      setShoppingList(list);
+    } catch (err: any) { 
+      console.error("Shopping list generation failed:", err);
+      alert(err.message || "Failed to generate shopping list");
+    }
     setIsGenerating(false);
   };
 
@@ -2578,7 +2603,7 @@ function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSyst
                 <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Ingredients</h3>
                 <ul className="space-y-3">
                   {recipe.ingredients.map((ing, i) => (
-                    <li key={i} className="text-sm text-stone-600 dark:text-stone-300 flex gap-3">
+                    <li key={`viewer-ing-${i}`} className="text-sm text-stone-600 dark:text-stone-300 flex gap-3">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full mt-1.5 flex-shrink-0" />
                       {convertUnits(scaleIngredient(ing, recipe.servings || 1, targetServings), unitSystem)}
                     </li>
@@ -2592,7 +2617,7 @@ function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSyst
                 <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Instructions</h3>
                 <div className="space-y-6">
                   {recipe.instructions.map((inst, i) => (
-                    <div key={i} className="flex gap-4">
+                    <div key={`viewer-inst-${i}`} className="flex gap-4">
                       <span className="flex-shrink-0 w-8 h-8 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center text-sm font-bold">{i + 1}</span>
                       <p className="text-stone-700 dark:text-stone-200 leading-relaxed pt-1">
                         {parseTimer(inst)}
@@ -2647,7 +2672,7 @@ function PublicRecipeView({ recipe, onClose }: { recipe: SavedRecipe, onClose: (
                 <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Ingredients</h3>
                 <ul className="space-y-4">
                   {recipe.ingredients.map((ing, i) => (
-                    <li key={i} className="text-stone-600 dark:text-stone-300 flex gap-3">
+                    <li key={`ing-${i}`} className="text-stone-600 dark:text-stone-300 flex gap-3">
                       <span className="w-2 h-2 bg-emerald-500 rounded-full mt-2 flex-shrink-0" />
                       {ing}
                     </li>
@@ -2660,7 +2685,7 @@ function PublicRecipeView({ recipe, onClose }: { recipe: SavedRecipe, onClose: (
                 <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Instructions</h3>
                 <div className="space-y-8">
                   {recipe.instructions.map((inst, i) => (
-                    <div key={i} className="flex gap-6">
+                    <div key={`inst-${i}`} className="flex gap-6">
                       <span className="flex-shrink-0 w-10 h-10 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center text-lg font-bold">{i + 1}</span>
                       <p className="text-stone-700 dark:text-stone-200 text-lg leading-relaxed pt-1">{inst}</p>
                     </div>
