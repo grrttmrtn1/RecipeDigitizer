@@ -104,6 +104,8 @@ export default function App() {
   const [isPrinting, setIsPrinting] = useState(false);
   const [printRecipe, setPrintRecipe] = useState<SavedRecipe | null>(null);
   const [viewRecipe, setViewRecipe] = useState<SavedRecipe | null>(null);
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [deletingRecipeId, setDeletingRecipeId] = useState<string | null>(null);
   
   // New Features State
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -506,6 +508,11 @@ export default function App() {
     }
   };
 
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const saveToLibrary = async (index: number) => {
     const upload = pendingUploads[index];
     if (!upload.data) return;
@@ -535,24 +542,40 @@ export default function App() {
       });
 
       if (res.ok) {
+        showToast("Recipe saved to library!");
         fetchLibrary();
         setPendingUploads(prev => prev.filter((_, i) => i !== index));
         if (currentIndex >= pendingUploads.length - 1) {
           setCurrentIndex(Math.max(0, pendingUploads.length - 2));
         }
+      } else {
+        const data = await res.json();
+        showToast(data.error || "Failed to save recipe", 'error');
       }
     } catch (err) {
       console.error("Save failed", err);
+      showToast("An error occurred while saving.", 'error');
     }
   };
 
   const deleteFromLibrary = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this recipe?")) return;
+    console.log(`[DEBUG] Attempting to delete recipe with ID: ${id}`);
     try {
-      await fetch(`/api/recipes/${id}`, { method: 'DELETE', credentials: 'include' });
-      fetchLibrary();
+      const res = await fetch(`/api/recipes/${id}`, { method: 'DELETE', credentials: 'include' });
+      console.log(`[DEBUG] Delete response status: ${res.status}`);
+      if (res.ok) {
+        showToast("Recipe deleted successfully");
+        fetchLibrary();
+      } else {
+        const data = await res.json();
+        console.error("[DEBUG] Delete failed:", data);
+        showToast(data.error || "Delete failed", 'error');
+      }
     } catch (err) {
-      console.error("Delete failed", err);
+      console.error("[DEBUG] Delete error:", err);
+      showToast("An error occurred while deleting.", 'error');
+    } finally {
+      setDeletingRecipeId(null);
     }
   };
 
@@ -1068,17 +1091,21 @@ export default function App() {
                             <ImageIcon size={32} />
                           </div>
                         )}
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                        <div className="absolute top-2 right-2 flex gap-2">
                           <button 
                             onClick={() => { setPrintRecipe(recipe); setIsPrinting(true); }}
-                            className="p-2 bg-white/90 backdrop-blur text-stone-600 rounded-full hover:bg-stone-50"
+                            className="p-2 bg-white/90 dark:bg-stone-800/90 backdrop-blur text-stone-600 dark:text-stone-300 rounded-full hover:bg-stone-50 dark:hover:bg-stone-700 shadow-sm"
                             title="Print Recipe"
                           >
                             <Printer size={16} />
                           </button>
                           <button 
-                            onClick={() => deleteFromLibrary(recipe.id)}
-                            className="p-2 bg-white/90 backdrop-blur text-red-500 rounded-full hover:bg-red-50"
+                            onClick={(e) => {
+                              console.log("[DEBUG] Delete button clicked for recipe:", recipe.id);
+                              e.stopPropagation();
+                              setDeletingRecipeId(recipe.id);
+                            }}
+                            className="p-2 bg-white/90 dark:bg-stone-800/90 backdrop-blur text-red-500 rounded-full hover:bg-red-50 dark:hover:bg-red-900/30 shadow-sm"
                             title="Delete Recipe"
                           >
                             <Trash2 size={16} />
@@ -1387,6 +1414,58 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      {activeTimer && (
+        <TimerWidget timer={activeTimer} onCancel={() => setActiveTimer(null)} />
+      )}
+
+      <AnimatePresence>
+        {deletingRecipeId && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
+              className="bg-white dark:bg-stone-900 p-8 rounded-[32px] max-w-sm w-full shadow-2xl border border-stone-100 dark:border-stone-800 text-center"
+            >
+              <div className="w-16 h-16 bg-red-50 dark:bg-red-900/30 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 size={32} />
+              </div>
+              <h3 className="text-2xl font-serif font-medium mb-2 dark:text-white">Delete Recipe?</h3>
+              <p className="text-stone-500 dark:text-stone-400 mb-8">This action cannot be undone. Are you sure you want to remove this recipe from your library?</p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setDeletingRecipeId(null)}
+                  className="flex-1 py-3 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 rounded-xl font-medium hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => deleteFromLibrary(deletingRecipeId)}
+                  className="flex-1 py-3 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-xl z-[200] flex items-center gap-3 font-medium ${
+              toast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+            }`}
+          >
+            {toast.type === 'success' ? <CheckCircle size={20} /> : <AlertCircle size={20} />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

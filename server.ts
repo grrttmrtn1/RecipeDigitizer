@@ -748,14 +748,24 @@ async function startServer() {
     
     try {
       const recipe: any = db.prepare("SELECT name FROM recipes WHERE id = ?").get(req.params.id);
+      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
+
+      // Clean up related data first
+      db.prepare("DELETE FROM recipe_images WHERE recipe_id = ?").run(req.params.id);
+      db.prepare("DELETE FROM meal_plan WHERE recipe_id = ?").run(req.params.id);
+
       if (req.session.role === 'admin') {
         db.prepare("DELETE FROM recipes WHERE id = ?").run(req.params.id);
       } else {
-        db.prepare("DELETE FROM recipes WHERE id = ? AND user_id = ?").run(req.params.id, req.session.userId);
+        const result = db.prepare("DELETE FROM recipes WHERE id = ? AND user_id = ?").run(req.params.id, req.session.userId);
+        if (result.changes === 0) {
+          return res.status(403).json({ error: "You do not have permission to delete this recipe" });
+        }
       }
       logAction(req.session.userId, "RECIPE_DELETE", { recipe_id: req.params.id, name: recipe?.name }, req);
       res.json({ success: true });
     } catch (error) {
+      console.error("Delete error:", error);
       res.status(500).json({ error: "Failed to delete recipe" });
     }
   });
