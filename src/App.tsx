@@ -28,15 +28,17 @@ import {
   Filter,
   Calendar,
   ShoppingCart,
-  FolderHeart,
-  Printer,
-  Zap,
-  Layers,
-  Share2,
-  Moon,
-  Sun,
-  Scale,
+  LayoutDashboard,
+  Activity,
   Clock,
+  Sun,
+  Moon,
+  Printer,
+  Layers,
+  FolderHeart,
+  Zap,
+  Share2,
+  Scale,
   Globe,
   Timer
 } from "lucide-react";
@@ -88,7 +90,7 @@ interface PendingUpload {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'library' | 'settings' | 'admin' | 'audit' | 'meal-plan' | 'shopping-list' | 'collections'>('upload');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'library' | 'settings' | 'admin' | 'audit' | 'meal-plan' | 'shopping-list' | 'collections'>('dashboard');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [library, setLibrary] = useState<SavedRecipe[]>([]);
@@ -765,6 +767,7 @@ export default function App() {
             <h1 className="text-xl font-semibold tracking-tight dark:text-white">RecipeDigitizer</h1>
           </div>
           <div className="flex gap-1 overflow-x-auto no-scrollbar items-center">
+            <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard size={18} />} label="Dashboard" />
             <NavButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} icon={<Upload size={18} />} label="Upload" />
             <NavButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<BookOpen size={18} />} label="Library" />
             <NavButton active={activeTab === 'collections'} onClick={() => setActiveTab('collections')} icon={<FolderHeart size={18} />} label="Collections" />
@@ -836,6 +839,14 @@ export default function App() {
           </motion.div>
         )}
         <AnimatePresence mode="wait">
+          {activeTab === 'dashboard' && (
+            <Dashboard 
+              library={library} 
+              mealPlans={mealPlans} 
+              onNavigate={setActiveTab} 
+            />
+          )}
+
           {activeTab === 'upload' && (
             <motion.div 
               key="upload"
@@ -853,7 +864,7 @@ export default function App() {
                   <p className="text-stone-500 mb-8 max-w-md text-center">
                     Upload a single photo of a handwritten recipe or an entire folder of PDFs and images.
                   </p>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap justify-center gap-4">
                     <button 
                       onClick={() => fileInputRef.current?.click()}
                       className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 transition-colors flex items-center gap-2 shadow-lg shadow-emerald-600/20"
@@ -865,6 +876,45 @@ export default function App() {
                       className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
                     >
                       <Plus size={18} /> Upload Folder
+                    </button>
+                    <button 
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = '.json';
+                        input.onchange = async (e: any) => {
+                          const file = e.target.files[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = async (re) => {
+                            try {
+                              const json = JSON.parse(re.target?.result as string);
+                              const recipeData: RecipeData = {
+                                name: json.name || "Imported Recipe",
+                                description: json.description || "",
+                                ingredients: (json.recipeIngredient || []).map((i: any) => typeof i === 'string' ? i : i.note || i.text),
+                                instructions: (json.recipeInstructions || []).map((i: any) => typeof i === 'string' ? i : i.text),
+                                tags: json.tags || [],
+                                servings: json.recipeYield || 1
+                              };
+                              setPendingUploads([{
+                                id: randomUUID(),
+                                files: [],
+                                status: 'completed',
+                                data: recipeData
+                              }]);
+                              setCurrentIndex(0);
+                            } catch (err) {
+                              showToast("Failed to parse Mealie JSON", "error");
+                            }
+                          };
+                          reader.readAsText(file);
+                        };
+                        input.click();
+                      }}
+                      className="px-6 py-3 bg-stone-100 text-stone-700 rounded-xl font-medium hover:bg-stone-200 transition-colors flex items-center gap-2"
+                    >
+                      <Download size={18} /> Import Mealie
                     </button>
                   </div>
                   <input type="file" ref={fileInputRef} className="hidden" multiple accept="image/*,application/pdf" onChange={(e) => handleFiles(e.target.files)} />
@@ -1373,6 +1423,45 @@ export default function App() {
                 </div>
               )}
 
+              <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-8">
+                <div>
+                  <h2 className="text-2xl font-medium mb-2">Feature Parity Checklist</h2>
+                  <p className="text-stone-500 text-sm">Tracking features compared to Mealie for full parity.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {[
+                    { label: 'Recipe Digitization (OCR)', status: 'completed' },
+                    { label: 'Nutrition Analysis (AI)', status: 'completed' },
+                    { label: 'Unit Conversion', status: 'completed' },
+                    { label: 'Recipe Scaling', status: 'completed' },
+                    { label: 'User Management', status: 'completed' },
+                    { label: 'Audit Logging', status: 'completed' },
+                    { label: 'Meal Planning (Basic)', status: 'completed' },
+                    { label: 'Shopping List (AI)', status: 'completed' },
+                    { label: 'Recipe Collections', status: 'completed' },
+                    { label: 'Mealie Integration', status: 'completed' },
+                    { label: 'Meal Planner (Calendar)', status: 'pending' },
+                    { label: 'Household/Groups', status: 'pending' },
+                    { label: 'Inventory Management', status: 'pending' },
+                    { label: 'Webhooks/API Access', status: 'pending' },
+                    { label: 'Advanced Search/Filters', status: 'pending' },
+                  ].map((item, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-stone-50 rounded-xl">
+                      <span className="text-sm font-medium text-stone-700">{item.label}</span>
+                      {item.status === 'completed' ? (
+                        <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">
+                          <CheckCircle size={12} /> Done
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-amber-600 bg-amber-50 px-2 py-1 rounded-lg">
+                          <Clock size={12} /> Planned
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl text-amber-800 text-sm">
                 <p className="font-medium mb-1">Security Note</p>
                 <p>Ensure you use HTTPS for your Mealie instance to protect data in transit. Password complexity changes apply to all new passwords set after saving.</p>
@@ -1490,6 +1579,7 @@ export default function App() {
 function AuditLogs() {
   const [logs, setLogs] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedLog, setSelectedLog] = useState<any | null>(null);
 
   useEffect(() => {
     fetchLogs();
@@ -1542,7 +1632,11 @@ function AuditLogs() {
                   </td>
                 </tr>
               ) : logs.map((log, i) => (
-                <tr key={log.id || i} className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+                <tr 
+                  key={log.id || i} 
+                  className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors cursor-pointer"
+                  onClick={() => setSelectedLog(log)}
+                >
                   <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 whitespace-nowrap">
                     {new Date(log.created_at).toLocaleString()}
                   </td>
@@ -1571,10 +1665,161 @@ function AuditLogs() {
           </table>
         </div>
       </div>
+
+      <AnimatePresence>
+        {selectedLog && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }}
+              className="bg-white dark:bg-stone-900 p-8 rounded-[32px] max-w-2xl w-full shadow-2xl border border-stone-100 dark:border-stone-800"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-serif font-medium dark:text-white">Log Details</h3>
+                <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs font-bold text-stone-400 uppercase mb-1">Timestamp</p>
+                    <p className="text-sm dark:text-stone-300">{new Date(selectedLog.created_at).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-stone-400 uppercase mb-1">User</p>
+                    <p className="text-sm dark:text-stone-300">{selectedLog.username || 'System'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-stone-400 uppercase mb-1">Action</p>
+                    <p className="text-sm dark:text-stone-300">{selectedLog.action}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-stone-400 uppercase mb-1">IP Address</p>
+                    <p className="text-sm dark:text-stone-300 font-mono">{selectedLog.ip_address || 'Unknown'}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-stone-400 uppercase mb-1">Full Details</p>
+                  <pre className="p-4 bg-stone-50 dark:bg-stone-800 rounded-2xl text-xs font-mono overflow-x-auto dark:text-stone-300 max-h-[300px] overflow-y-auto">
+                    {JSON.stringify(JSON.parse(selectedLog.details || '{}'), null, 2)}
+                  </pre>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedLog(null)}
+                className="mt-8 w-full py-3 bg-stone-900 dark:bg-stone-800 text-white rounded-xl font-medium hover:bg-stone-800 dark:hover:bg-stone-700 transition-colors"
+              >
+                Close
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
+function Dashboard({ library, mealPlans, onNavigate }: { library: SavedRecipe[], mealPlans: MealPlanEntry[], onNavigate: (tab: any) => void }) {
+  const stats = [
+    { label: 'Total Recipes', value: library.length, icon: <BookOpen className="text-emerald-600" /> },
+    { label: 'Meal Plans', value: mealPlans.length, icon: <Calendar className="text-blue-600" /> },
+    { label: 'Collections', value: [...new Set(library.flatMap(r => r.tags || []))].length, icon: <FolderHeart className="text-rose-600" /> },
+    { label: 'Recent Uploads', value: library.filter(r => new Date(r.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)).length, icon: <Plus className="text-amber-600" /> },
+  ];
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-8"
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {stats.map((stat, i) => (
+          <div key={i} className="bg-white dark:bg-stone-900 p-6 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-sm flex items-center gap-4">
+            <div className="w-12 h-12 bg-stone-50 dark:bg-stone-800 rounded-2xl flex items-center justify-center">
+              {stat.icon}
+            </div>
+            <div>
+              <p className="text-xs font-bold text-stone-400 uppercase tracking-wider">{stat.label}</p>
+              <p className="text-2xl font-bold dark:text-white">{stat.value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-serif font-medium dark:text-white">Recent Recipes</h3>
+            <button onClick={() => onNavigate('library')} className="text-sm text-emerald-600 font-medium hover:underline">View All</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {library.slice(0, 4).map((recipe) => (
+              <div key={recipe.id} className="bg-white dark:bg-stone-900 p-4 rounded-3xl border border-stone-200 dark:border-stone-800 shadow-sm flex gap-4 group cursor-pointer hover:border-emerald-500 transition-all">
+                <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 bg-stone-100 dark:bg-stone-800">
+                  {recipe.image_data ? (
+                    <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-stone-300">
+                      <ImageIcon size={24} />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="font-bold text-stone-900 dark:text-white truncate">{recipe.name}</h4>
+                  <p className="text-xs text-stone-500 line-clamp-2 mt-1">{recipe.description}</p>
+                  <div className="flex gap-1 mt-2">
+                    {(recipe.tags || []).slice(0, 2).map(t => (
+                      <span key={t} className="text-[9px] font-bold uppercase tracking-wider bg-stone-100 dark:bg-stone-800 text-stone-500 px-1.5 py-0.5 rounded">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <h3 className="text-xl font-serif font-medium dark:text-white">Quick Actions</h3>
+          <div className="grid grid-cols-1 gap-3">
+            <button 
+              onClick={() => onNavigate('upload')}
+              className="w-full p-4 bg-emerald-600 text-white rounded-2xl font-medium flex items-center gap-3 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20"
+            >
+              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                <Plus size={20} />
+              </div>
+              Digitize New Recipe
+            </button>
+            <button 
+              onClick={() => onNavigate('meal-plan')}
+              className="w-full p-4 bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 rounded-2xl font-medium flex items-center gap-3 border border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-800 transition-all shadow-sm"
+            >
+              <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-xl flex items-center justify-center">
+                <Calendar size={20} />
+              </div>
+              Plan Your Meals
+            </button>
+            <button 
+              onClick={() => onNavigate('shopping-list')}
+              className="w-full p-4 bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 rounded-2xl font-medium flex items-center gap-3 border border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-800 transition-all shadow-sm"
+            >
+              <div className="w-10 h-10 bg-amber-50 dark:bg-amber-900/30 text-amber-600 rounded-xl flex items-center justify-center">
+                <ShoppingCart size={20} />
+              </div>
+              Generate Shopping List
+            </button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
 function NavButton({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: ReactNode, label: string }) {
   return (
     <button 
@@ -1990,7 +2235,7 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
                 className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
               />
               {passwordReqs && (
-                <div className="absolute top-full left-0 z-10 bg-white p-2 rounded-lg border border-stone-200 shadow-lg text-[9px] text-stone-400 space-y-0 leading-tight mt-1 min-w-[120px]">
+                <div className="text-[9px] text-stone-400 space-y-0 leading-tight mt-1">
                   <p>• Min {passwordReqs.passwordMinLength} chars</p>
                   {passwordReqs.passwordRequireNumber === "1" && <p>• One number</p>}
                   {passwordReqs.passwordRequireSpecial === "1" && <p>• One special char</p>}
@@ -2562,11 +2807,31 @@ function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSyst
         <div className="flex-1 overflow-y-auto p-8">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
             <div className="lg:col-span-1 space-y-8">
-              {recipe.image_data && (
-                <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
-                  <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
-                </div>
-              )}
+              <div className="space-y-4">
+                {recipe.image_data && (
+                  <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
+                    <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                  </div>
+                )}
+                
+                {recipe.additional_images && recipe.additional_images.length > 0 && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {recipe.additional_images.map((img: any, idx: number) => (
+                      <div key={idx} className="aspect-square rounded-lg overflow-hidden border border-stone-100 dark:border-stone-800">
+                        <img 
+                          src={typeof img === 'string' ? img : img.image_data} 
+                          className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity" 
+                          alt={`${recipe.name} ${idx + 2}`}
+                          onClick={() => {
+                            // Simple lightbox or just swap main image? 
+                            // For now let's just show them.
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="space-y-6 bg-stone-50 dark:bg-stone-800/50 p-6 rounded-3xl">
                 <div className="flex items-center justify-between">
