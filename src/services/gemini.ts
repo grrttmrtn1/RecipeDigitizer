@@ -71,6 +71,56 @@ export async function extractRecipeFromImage(images: { base64Data: string, mimeT
   return JSON.parse(text);
 }
 
+export async function extractRecipeFromUrl(url: string): Promise<RecipeData> {
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+  
+  const prompt = `
+    Extract the recipe information from the provided URL: ${url}.
+    Return the data in a structured JSON format.
+    Include:
+    - name: The title of the recipe.
+    - description: A brief summary or notes about the recipe.
+    - ingredients: A list of ingredients with their quantities.
+    - instructions: A step-by-step list of instructions.
+    - servings: The number of servings this recipe makes (as a number).
+    - tags: A list of relevant tags or categories.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: { parts: [{ text: prompt }] },
+    config: {
+      tools: [{ urlContext: {} }],
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          description: { type: Type.STRING },
+          ingredients: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          instructions: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          servings: { type: Type.NUMBER },
+          tags: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+        },
+        required: ["name", "ingredients", "instructions"],
+      },
+    },
+  });
+
+  const text = response.text;
+  if (!text) throw new Error("No response from Gemini");
+  return JSON.parse(text);
+}
+
 export async function analyzeNutrition(recipe: { name: string, ingredients: string[], instructions: string[] }): Promise<any> {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
   

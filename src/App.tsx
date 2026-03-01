@@ -41,7 +41,7 @@ import {
   Timer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { extractRecipeFromImage, RecipeData } from "./services/gemini";
+import { extractRecipeFromImage, extractRecipeFromUrl, RecipeData } from "./services/gemini";
 
 const randomUUID = () => crypto.randomUUID();
 
@@ -118,6 +118,9 @@ export default function App() {
   const [unitSystem, setUnitSystem] = useState<'metric' | 'imperial'>('metric');
   const [publicRecipe, setPublicRecipe] = useState<SavedRecipe | null>(null);
   const [activeTimer, setActiveTimer] = useState<{ id: string, seconds: number, label: string } | null>(null);
+  const [selectedLog, setSelectedLog] = useState<any | null>(null);
+  const [scrapeUrl, setScrapeUrl] = useState('');
+  const [isScraping, setIsScraping] = useState(false);
 
   // Auth State
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -508,6 +511,27 @@ export default function App() {
     }
   };
 
+  const handleScrapeUrl = async () => {
+    if (!scrapeUrl.trim()) return;
+    setIsScraping(true);
+    try {
+      const data = await extractRecipeFromUrl(scrapeUrl);
+      const newUpload: PendingUpload = {
+        id: randomUUID(),
+        files: [],
+        status: 'completed',
+        data
+      };
+      setPendingUploads(prev => [...prev, newUpload]);
+      setScrapeUrl('');
+      showToast("Recipe scraped successfully!");
+    } catch (err: any) {
+      showToast(err.message || "Failed to scrape URL", "error");
+    } finally {
+      setIsScraping(false);
+    }
+  };
+
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -844,11 +868,72 @@ export default function App() {
                       <ImageIcon size={18} /> Select Files
                     </button>
                     <button 
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = '.json';
+                        input.onchange = async (e) => {
+                          const file = (e.target as HTMLInputElement).files?.[0];
+                          if (!file) return;
+                          const text = await file.text();
+                          try {
+                            const mealieData = JSON.parse(text);
+                            // Handle both single recipe and array of recipes
+                            const recipes = Array.isArray(mealieData) ? mealieData : [mealieData];
+                            
+                            const newUploads: PendingUpload[] = recipes.map(r => ({
+                              id: randomUUID(),
+                              files: [],
+                              status: 'completed',
+                              data: {
+                                name: r.name || r.title || "Imported Recipe",
+                                description: r.description || "",
+                                ingredients: (r.recipeIngredient || r.ingredients || []).map((i: any) => typeof i === 'string' ? i : (i.note || i.text || "")),
+                                instructions: (r.recipeInstructions || r.instructions || []).map((i: any) => typeof i === 'string' ? i : (i.text || i.note || "")),
+                                tags: r.tags || [],
+                                servings: r.recipeYield || r.servings || 1
+                              }
+                            }));
+                            setPendingUploads(prev => [...prev, ...newUploads]);
+                            showToast(`Imported ${newUploads.length} recipes from Mealie`);
+                          } catch (err) {
+                            showToast("Failed to parse Mealie JSON", "error");
+                          }
+                        };
+                        input.click();
+                      }}
+                      className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
+                    >
+                      <Download size={18} /> Import Mealie
+                    </button>
+                    <button 
                       onClick={() => folderInputRef.current?.click()}
                       className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
                     >
                       <Plus size={18} /> Upload Folder
                     </button>
+                  </div>
+
+                  <div className="w-full max-w-md mt-8">
+                    <div className="relative">
+                      <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400" size={20} />
+                      <input 
+                        type="url"
+                        placeholder="Paste a recipe URL to scrape..."
+                        value={scrapeUrl}
+                        onChange={(e) => setScrapeUrl(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleScrapeUrl()}
+                        className="w-full pl-12 pr-32 py-4 rounded-2xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all shadow-sm"
+                      />
+                      <button 
+                        onClick={handleScrapeUrl}
+                        disabled={isScraping || !scrapeUrl}
+                        className="absolute right-2 top-2 bottom-2 px-4 bg-stone-900 text-white rounded-xl text-sm font-medium hover:bg-stone-800 disabled:opacity-50 transition-all flex items-center gap-2"
+                      >
+                        {isScraping ? <Loader2 className="animate-spin" size={16} /> : <Zap size={16} />}
+                        Scrape
+                      </button>
+                    </div>
                   </div>
                   <input type="file" ref={fileInputRef} className="hidden" multiple accept="image/*,application/pdf" onChange={(e) => handleFiles(e.target.files)} />
                   <input type="file" ref={folderInputRef} className="hidden" {...{webkitdirectory: "", directory: ""} as any} onChange={(e) => handleFiles(e.target.files)} />
@@ -1360,6 +1445,42 @@ export default function App() {
                 <p className="font-medium mb-1">Security Note</p>
                 <p>Ensure you use HTTPS for your Mealie instance to protect data in transit. Password complexity changes apply to all new passwords set after saving.</p>
               </div>
+
+              <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-6">
+                <h2 className="text-2xl font-medium">Mealie Feature Parity Map</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {[
+                    { name: "Recipe Scraping", status: "Implemented", details: "Gemini-powered URL extraction" },
+                    { name: "Meal Planning", status: "Implemented", details: "Basic list-based planner" },
+                    { name: "Shopping Lists", status: "Implemented", details: "AI-consolidated lists" },
+                    { name: "User Management", status: "Implemented", details: "RBAC with Admin/User/Read-only" },
+                    { name: "Nutrition Analysis", status: "Implemented", details: "AI-estimated macros" },
+                    { name: "Unit Conversion", status: "Implemented", details: "Metric/Imperial toggle" },
+                    { name: "Recipe Scaling", status: "Implemented", details: "Dynamic serving adjustment" },
+                    { name: "Audit Logging", status: "Implemented", details: "Full system activity logs" },
+                    { name: "API Access", status: "Implemented", details: "RESTful endpoints available" },
+                    { name: "Bulk Import", status: "Implemented", details: "Mealie JSON export support" },
+                    { name: "Recipe Scraping (Handwritten)", status: "Unique Feature", details: "OCR via Gemini Vision" },
+                    { name: "Calendar View", status: "Missing", details: "Planned for future release" },
+                    { name: "Inventory Tracking", status: "Missing", details: "Planned for future release" },
+                    { name: "Webhooks", status: "Missing", details: "Planned for future release" },
+                  ].map((feature, i) => (
+                    <div key={i} className="p-4 border border-stone-100 rounded-2xl flex items-start justify-between">
+                      <div>
+                        <p className="font-bold text-stone-800 text-sm">{feature.name}</p>
+                        <p className="text-xs text-stone-500">{feature.details}</p>
+                      </div>
+                      <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-lg ${
+                        feature.status === 'Implemented' ? 'bg-emerald-50 text-emerald-600' :
+                        feature.status === 'Unique Feature' ? 'bg-blue-50 text-blue-600' :
+                        'bg-stone-50 text-stone-400'
+                      }`}>
+                        {feature.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -1473,6 +1594,7 @@ export default function App() {
 function AuditLogs() {
   const [logs, setLogs] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedLog, setSelectedLog] = useState<any | null>(null);
 
   useEffect(() => {
     fetchLogs();
@@ -1525,7 +1647,11 @@ function AuditLogs() {
                   </td>
                 </tr>
               ) : logs.map((log, i) => (
-                <tr key={log.id || i} className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+                <tr 
+                  key={log.id || i} 
+                  onClick={() => setSelectedLog(log)}
+                  className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors cursor-pointer"
+                >
                   <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 whitespace-nowrap">
                     {new Date(log.created_at).toLocaleString()}
                   </td>
@@ -1542,7 +1668,7 @@ function AuditLogs() {
                       {log.action}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 max-w-xs truncate" title={log.details}>
+                  <td className="px-6 py-4 text-sm text-stone-600 dark:text-stone-400 max-w-xs truncate">
                     {log.details}
                   </td>
                   <td className="px-6 py-4 text-sm text-stone-400 font-mono">
@@ -1554,6 +1680,63 @@ function AuditLogs() {
           </table>
         </div>
       </div>
+
+      <AnimatePresence>
+        {selectedLog && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            onClick={() => setSelectedLog(null)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+              className="bg-white dark:bg-stone-900 w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-stone-200 dark:border-stone-800"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-6 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between">
+                <h3 className="text-xl font-serif font-medium dark:text-white">Log Entry Details</h3>
+                <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-8 space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block mb-1">Timestamp</label>
+                    <p className="text-sm dark:text-white">{new Date(selectedLog.created_at).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block mb-1">User</label>
+                    <p className="text-sm dark:text-white font-medium">{selectedLog.username || 'System'}</p>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block mb-1">Action</label>
+                    <p className="text-sm dark:text-white font-bold">{selectedLog.action}</p>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block mb-1">IP Address</label>
+                    <p className="text-sm text-stone-500 font-mono">{selectedLog.ip_address}</p>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block mb-1">Full Details</label>
+                  <pre className="bg-stone-50 dark:bg-stone-800 p-4 rounded-2xl text-xs text-stone-600 dark:text-stone-300 overflow-auto max-h-60 whitespace-pre-wrap font-mono">
+                    {JSON.stringify(JSON.parse(selectedLog.details || '{}'), null, 2)}
+                  </pre>
+                </div>
+              </div>
+              <div className="p-6 bg-stone-50 dark:bg-stone-800/50 flex justify-end">
+                <button 
+                  onClick={() => setSelectedLog(null)}
+                  className="px-6 py-2 bg-stone-900 dark:bg-stone-700 text-white rounded-xl text-sm font-medium"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1689,7 +1872,19 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
       </div>
 
       <div className="space-y-4">
-        <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Ingredients</label>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Ingredients</label>
+          <button 
+            onClick={() => {
+              const text = data.ingredients.join('\n');
+              navigator.clipboard.writeText(text);
+              alert("Ingredients copied to clipboard!");
+            }}
+            className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 hover:text-emerald-700 transition-colors"
+          >
+            Copy All
+          </button>
+        </div>
         <div className="space-y-2">
           {data.ingredients.map((ing, i) => (
             <div key={i} className="flex gap-2 group">
@@ -1724,7 +1919,19 @@ function RecipeForm({ data, user, onChange, onSave, onMealie }: { data: RecipeDa
       </div>
 
       <div className="space-y-4">
-        <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Instructions</label>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-bold uppercase tracking-wider text-stone-400">Instructions</label>
+          <button 
+            onClick={() => {
+              const text = data.instructions.map((inst, i) => `${i + 1}. ${inst}`).join('\n');
+              navigator.clipboard.writeText(text);
+              alert("Instructions copied to clipboard!");
+            }}
+            className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 hover:text-emerald-700 transition-colors"
+          >
+            Copy All
+          </button>
+        </div>
         <div className="space-y-3">
           {data.instructions.map((inst, i) => (
             <div key={i} className="flex gap-3 group">
@@ -1963,7 +2170,7 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
                 className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
               />
             </div>
-            <div className="space-y-1 relative">
+            <div className="space-y-1">
               <label className="text-xs font-bold text-stone-400 uppercase">Password</label>
               <input 
                 type="password" 
@@ -1973,10 +2180,8 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
                 className="w-full px-3 py-2 rounded-lg border border-stone-200 text-sm"
               />
               {passwordReqs && (
-                <div className="absolute top-full left-0 z-10 bg-white p-2 rounded-lg border border-stone-200 shadow-lg text-[9px] text-stone-400 space-y-0 leading-tight mt-1 min-w-[120px]">
-                  <p>• Min {passwordReqs.passwordMinLength} chars</p>
-                  {passwordReqs.passwordRequireNumber === "1" && <p>• One number</p>}
-                  {passwordReqs.passwordRequireSpecial === "1" && <p>• One special char</p>}
+                <div className="text-[9px] text-stone-400 space-y-0 leading-tight mt-1">
+                  <p>• Min {passwordReqs.passwordMinLength} chars, {passwordReqs.passwordRequireNumber === "1" ? "1 number" : ""}, {passwordReqs.passwordRequireSpecial === "1" ? "1 special" : ""}</p>
                 </div>
               )}
             </div>
@@ -2084,23 +2289,23 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
                 </td>
                 <td className="px-6 py-4">
                   {editingUserId === u.id ? (
-                    <div className="flex items-center gap-2 relative">
-                      <input 
-                        type="password"
-                        placeholder="New Password"
-                        value={editPassword}
-                        onChange={(e) => setEditPassword(e.target.value)}
-                        className="px-2 py-1 border border-stone-200 rounded text-sm w-32"
-                      />
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <input 
+                          type="password"
+                          placeholder="New Password"
+                          value={editPassword}
+                          onChange={(e) => setEditPassword(e.target.value)}
+                          className="px-2 py-1 border border-stone-200 rounded text-sm w-32"
+                        />
+                        <button onClick={handleUpdateUser} className="text-emerald-600 hover:text-emerald-700 font-medium text-sm">Save</button>
+                        <button onClick={() => setEditingUserId(null)} className="text-stone-400 hover:text-stone-600 font-medium text-sm">Cancel</button>
+                      </div>
                       {passwordReqs && editPassword && (
-                        <div className="absolute bottom-full left-0 z-20 bg-white p-2 rounded-lg border border-stone-200 shadow-lg text-[9px] text-stone-400 space-y-0 leading-tight mb-2 min-w-[120px]">
-                          <p>• Min {passwordReqs.passwordMinLength} chars</p>
-                          {passwordReqs.passwordRequireNumber === "1" && <p>• One number</p>}
-                          {passwordReqs.passwordRequireSpecial === "1" && <p>• One special char</p>}
+                        <div className="text-[9px] text-stone-400 space-y-0 leading-tight">
+                          <p>• Min {passwordReqs.passwordMinLength} chars, {passwordReqs.passwordRequireNumber === "1" ? "1 number" : ""}, {passwordReqs.passwordRequireSpecial === "1" ? "1 special" : ""}</p>
                         </div>
                       )}
-                      <button onClick={handleUpdateUser} className="text-emerald-600 hover:text-emerald-700 font-medium text-sm">Save</button>
-                      <button onClick={() => setEditingUserId(null)} className="text-stone-400 hover:text-stone-600 font-medium text-sm">Cancel</button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
@@ -2537,11 +2742,27 @@ function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSyst
         <div className="flex-1 overflow-y-auto p-8">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
             <div className="lg:col-span-1 space-y-8">
-              {recipe.image_data && (
-                <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
-                  <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
-                </div>
-              )}
+              <div className="space-y-4">
+                {recipe.image_data && (
+                  <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
+                    <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                  </div>
+                )}
+                
+                {recipe.additional_images && recipe.additional_images.length > 0 && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {recipe.additional_images.map((img, i) => (
+                      <div key={i} className="aspect-square rounded-lg overflow-hidden border border-stone-100 dark:border-stone-800 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => {
+                        // Swap main image with this one (simple implementation)
+                        const mainImg = document.querySelector('.lg\\:col-span-1 img') as HTMLImageElement;
+                        if (mainImg) mainImg.src = img.image_data;
+                      }}>
+                        <img src={img.image_data} className="w-full h-full object-cover" alt={`Page ${i + 2}`} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div className="space-y-6 bg-stone-50 dark:bg-stone-800/50 p-6 rounded-3xl">
                 <div className="flex items-center justify-between">

@@ -833,43 +833,12 @@ async function startServer() {
 
   app.post("/api/recipes/:id/nutrition", isAuthenticated, async (req: any, res) => {
     try {
-      const recipe: any = db.prepare("SELECT * FROM recipes WHERE id = ?").get(req.params.id);
-      if (!recipe) return res.status(404).json({ error: "Recipe not found" });
-      
-      // Nutrition analysis logic will be handled by Gemini
-      // For now, we'll just return a placeholder or call a service
-      // I'll implement the actual service call in gemini.ts
-      const { analyzeNutrition } = await import("./src/services/gemini.js");
-      const nutrition = await analyzeNutrition({
-        name: recipe.name,
-        ingredients: JSON.parse(recipe.ingredients),
-        instructions: JSON.parse(recipe.instructions)
-      });
-
+      const nutrition = req.body;
       db.prepare("UPDATE recipes SET nutrition_info = ? WHERE id = ?").run(JSON.stringify(nutrition), req.params.id);
       res.json(nutrition);
     } catch (error) {
-      console.error("Nutrition analysis failed:", error);
-      res.status(500).json({ error: "Failed to analyze nutrition" });
-    }
-  });
-
-  app.get("/api/shopping-list", isAuthenticated, async (req: any, res) => {
-    try {
-      const { recipe_ids } = req.query;
-      if (!recipe_ids) return res.json([]);
-      
-      const ids = (recipe_ids as string).split(",");
-      const recipes = db.prepare(`SELECT * FROM recipes WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids);
-      
-      const { consolidateShoppingList } = await import("./src/services/gemini.js");
-      const ingredientsList = recipes.map((r: any) => JSON.parse(r.ingredients));
-      const shoppingList = await consolidateShoppingList(ingredientsList);
-      
-      res.json(shoppingList);
-    } catch (error) {
-      console.error("Shopping list generation failed:", error);
-      res.status(500).json({ error: "Failed to generate shopping list" });
+      console.error("Failed to save nutrition:", error);
+      res.status(500).json({ error: "Failed to save nutrition" });
     }
   });
 
@@ -901,6 +870,13 @@ async function startServer() {
     } catch (error: any) {
       res.status(500).json({ error: "Failed to submit to Mealie", details: error.response?.data });
     }
+  });
+
+  app.get("/api/config", (req, res) => {
+    res.json({
+      geminiApiKey: process.env.GEMINI_API_KEY,
+      apiKey: process.env.API_KEY
+    });
   });
 
   // Vite middleware for development
