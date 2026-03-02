@@ -28,10 +28,24 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("recipes.db");
+// Ensure data directory exists for SQLite
+const dataDir = path.join(__dirname, "data");
+import { mkdirSync, existsSync } from "fs";
+if (!existsSync(dataDir)) {
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    console.log(`[DB] Created data directory at ${dataDir}`);
+  } catch (err) {
+    console.error(`[DB] Failed to create data directory: ${err}`);
+  }
+}
+
+const dbPath = path.join(dataDir, "recipes.db");
+console.log(`[DB] Using database at ${dbPath}`);
+const db = new Database(dbPath);
 
 // Initialize database
-console.log("Initializing database...");
+console.log("[DB] Initializing schema...");
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -287,7 +301,7 @@ async function startServer() {
   });
 
   app.use(session({
-    store: new SQLiteStore({ db: "sessions.db", dir: "." }) as any,
+    store: new SQLiteStore({ db: "sessions.db", dir: dataDir }) as any,
     secret: process.env.SESSION_SECRET || "recipe-digitizer-secret",
     resave: false,
     saveUninitialized: false,
