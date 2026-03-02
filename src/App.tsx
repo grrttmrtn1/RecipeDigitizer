@@ -868,6 +868,12 @@ export default function App() {
                       <ImageIcon size={18} /> Select Files
                     </button>
                     <button 
+                      onClick={() => folderInputRef.current?.click()}
+                      className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
+                    >
+                      <Plus size={18} /> Upload Folder
+                    </button>
+                    <button 
                       onClick={() => {
                         const input = document.createElement('input');
                         input.type = 'file';
@@ -905,12 +911,6 @@ export default function App() {
                       className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
                     >
                       <Download size={18} /> Import Mealie
-                    </button>
-                    <button 
-                      onClick={() => folderInputRef.current?.click()}
-                      className="px-6 py-3 bg-white border border-stone-200 text-stone-700 rounded-xl font-medium hover:bg-stone-50 transition-colors flex items-center gap-2"
-                    >
-                      <Plus size={18} /> Upload Folder
                     </button>
                   </div>
 
@@ -2159,7 +2159,7 @@ function AdminPanel({ passwordReqs }: { passwordReqs: any }) {
           animate={{ opacity: 1, height: 'auto' }}
           className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm"
         >
-          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-start">
             <div className="space-y-1">
               <label className="text-xs font-bold text-stone-400 uppercase">Username</label>
               <input 
