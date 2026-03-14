@@ -739,7 +739,7 @@ async function startServer() {
   app.put("/api/recipes/:id", isAuthenticated, (req: any, res) => {
     if (req.session.role === 'readonly') return res.status(403).json({ error: "Read-only access" });
     
-    const { name, description, ingredients, instructions, tags, collection_id, additional_images } = req.body;
+    const { name, description, ingredients, instructions, tags, collection_id, additional_images, image_data, mime_type } = req.body;
     try {
       const recipe: any = db.prepare("SELECT user_id FROM recipes WHERE id = ?").get(req.params.id);
       if (!recipe) return res.status(404).json({ error: "Recipe not found" });
@@ -749,9 +749,19 @@ async function startServer() {
 
       db.prepare(`
         UPDATE recipes 
-        SET name = ?, description = ?, ingredients = ?, instructions = ?, tags = ?, collection_id = ?
+        SET name = ?, description = ?, ingredients = ?, instructions = ?, tags = ?, collection_id = ?, image_data = ?, mime_type = ?
         WHERE id = ?
-      `).run(name, description, JSON.stringify(ingredients), JSON.stringify(instructions), JSON.stringify(tags || []), collection_id || null, req.params.id);
+      `).run(
+        name, 
+        description, 
+        JSON.stringify(ingredients), 
+        JSON.stringify(instructions), 
+        JSON.stringify(tags || []), 
+        collection_id || null, 
+        image_data || null, 
+        mime_type || null, 
+        req.params.id
+      );
       
       if (additional_images && Array.isArray(additional_images)) {
         db.prepare("DELETE FROM recipe_images WHERE recipe_id = ?").run(req.params.id);

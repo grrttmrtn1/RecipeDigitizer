@@ -90,6 +90,7 @@ interface PendingUpload {
   status: 'pending' | 'processing' | 'completed' | 'error';
   data?: RecipeData;
   error?: string;
+  originalRecipeId?: string;
 }
 
 export default function App() {
@@ -457,23 +458,24 @@ export default function App() {
     if (!files) return;
     
     try {
-      const newUploads: PendingUpload[] = Array.from(files)
-        .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf')
-        .map(file => ({
-          id: randomUUID(),
-          files: [{
-            file,
-            preview: URL.createObjectURL(file)
-          }],
-          status: 'pending'
-        }));
-
-      if (newUploads.length === 0) {
+      const validFiles = Array.from(files).filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
+      
+      if (validFiles.length === 0) {
         showToast("No valid images or PDFs found in selection", "error");
         return;
       }
 
-      setPendingUploads(prev => [...prev, ...newUploads]);
+      // Treat all files selected at once as a single multi-page recipe
+      const newUpload: PendingUpload = {
+        id: randomUUID(),
+        files: validFiles.map(file => ({
+          file,
+          preview: URL.createObjectURL(file)
+        })),
+        status: 'pending'
+      };
+
+      setPendingUploads(prev => [...prev, newUpload]);
       setActiveTab('upload');
     } catch (err: any) {
       console.error("Error handling files:", err);
@@ -501,6 +503,12 @@ export default function App() {
 
     try {
       const images = await Promise.all(upload.files.map(async (f) => {
+        // If it's an existing image (from edit), the file might be empty but preview has the data
+        if (f.file.size === 0 && f.preview.startsWith('data:')) {
+          const mimeType = f.preview.split(';')[0].split(':')[1];
+          return { base64Data: f.preview, mimeType: mimeType };
+        }
+
         const reader = new FileReader();
         const base64Promise = new Promise<string>((resolve) => {
           reader.onload = () => resolve(reader.result as string);
@@ -558,6 +566,12 @@ export default function App() {
 
     try {
       const images = await Promise.all(upload.files.map(async (f) => {
+        // If it's an existing image (from edit), the file might be empty but preview has the data
+        if (f.file.size === 0 && f.preview.startsWith('data:')) {
+          const mimeType = f.preview.split(';')[0].split(':')[1];
+          return { image_data: f.preview, mime_type: mimeType };
+        }
+
         const reader = new FileReader();
         const base64Promise = new Promise<string>((resolve) => {
           reader.onload = () => resolve(reader.result as string);
@@ -567,8 +581,11 @@ export default function App() {
         return { image_data: base64, mime_type: f.file.type };
       }));
 
-      const res = await fetch('/api/recipes', {
-        method: 'POST',
+      const url = upload.originalRecipeId ? `/api/recipes/${upload.originalRecipeId}` : '/api/recipes';
+      const method = upload.originalRecipeId ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...upload.data,
@@ -1262,12 +1279,21 @@ export default function App() {
                           <button 
                             onClick={() => {
                               // Load into editor
+                              const allFiles = [
+                                {
+                                  file: new File([], "main-image"),
+                                  preview: recipe.image_data || "",
+                                },
+                                ...(recipe.additional_images || []).map((img: any) => ({
+                                  file: new File([], "additional-image"),
+                                  preview: img.image_data,
+                                }))
+                              ];
+                              
                               setPendingUploads([{
                                 id: randomUUID(),
-                                files: [{
-                                  file: new File([], "saved-recipe"), // dummy file
-                                  preview: recipe.image_data || "",
-                                }],
+                                originalRecipeId: recipe.id,
+                                files: allFiles,
                                 status: 'completed',
                                 data: {
                                   name: recipe.name,
