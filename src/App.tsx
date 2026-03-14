@@ -974,26 +974,31 @@ export default function App() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   {/* Left: Preview & Navigation */}
                   <div className="space-y-4">
-                    <div className="bg-white p-4 rounded-3xl border border-stone-200 shadow-sm relative overflow-hidden aspect-[4/3] flex items-center justify-center">
-                      {pendingUploads[currentIndex].files[0].file.type === 'application/pdf' ? (
-                        <div className="flex flex-col items-center text-stone-400">
-                          <FileText size={64} />
-                          <p className="mt-2 font-medium">{pendingUploads[currentIndex].files[0].file.name}</p>
-                        </div>
-                      ) : (
-                        <div className="relative w-full h-full">
-                          <img 
-                            src={pendingUploads[currentIndex].files[0].preview} 
-                            className="max-h-full max-w-full object-contain rounded-lg mx-auto" 
-                            alt="Recipe preview" 
-                          />
-                          {pendingUploads[currentIndex].files.length > 1 && (
-                            <div className="absolute bottom-4 right-4 bg-emerald-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg flex items-center gap-1">
-                              <Layers size={12} /> {pendingUploads[currentIndex].files.length} PAGES
-                            </div>
-                          )}
-                        </div>
-                      )}
+                    <div className="bg-white p-4 rounded-3xl border border-stone-200 shadow-sm relative overflow-hidden aspect-[4/3]">
+                      <div className="w-full h-full overflow-y-auto pr-2 scrollbar-thin">
+                        {pendingUploads[currentIndex].files[0].file.type === 'application/pdf' ? (
+                          <div className="h-full flex flex-col items-center justify-center text-stone-400">
+                            <FileText size={64} />
+                            <p className="mt-2 font-medium">{pendingUploads[currentIndex].files[0].file.name}</p>
+                            <p className="text-xs mt-1">{pendingUploads[currentIndex].files.length} Pages</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {pendingUploads[currentIndex].files.map((f, i) => (
+                              <div key={i} className="relative">
+                                <img 
+                                  src={f.preview} 
+                                  className="w-full object-contain rounded-lg mx-auto" 
+                                  alt={`Recipe page ${i + 1}`} 
+                                />
+                                <div className="absolute top-2 right-2 bg-black/50 text-white px-2 py-0.5 rounded text-[10px] font-bold backdrop-blur-sm">
+                                  PAGE {i + 1}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       
                       {pendingUploads.length > 1 && (
                         <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 flex justify-between pointer-events-none">
@@ -1200,12 +1205,26 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {library.map((recipe) => (
                     <div key={recipe.id} className="bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-sm hover:shadow-md transition-shadow group">
-                      <div className="aspect-[16/9] bg-stone-100 relative overflow-hidden">
-                        {recipe.image_data ? (
-                          <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-stone-300">
-                            <ImageIcon size={32} />
+                      <div className="aspect-[16/9] bg-stone-100 relative overflow-hidden group/images">
+                        <div className="flex w-full h-full overflow-x-auto snap-x snap-mandatory scrollbar-hide">
+                          {recipe.image_data ? (
+                            <div className="w-full h-full flex-shrink-0 snap-start">
+                              <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                            </div>
+                          ) : (
+                            <div className="w-full h-full flex-shrink-0 snap-start flex items-center justify-center text-stone-300">
+                              <ImageIcon size={32} />
+                            </div>
+                          )}
+                          {recipe.additional_images?.map((img, i) => (
+                            <div key={i} className="w-full h-full flex-shrink-0 snap-start">
+                              <img src={img.image_data} className="w-full h-full object-cover" alt={`${recipe.name} page ${i + 2}`} />
+                            </div>
+                          ))}
+                        </div>
+                        {recipe.additional_images && recipe.additional_images.length > 0 && (
+                          <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-0.5 rounded text-[10px] font-bold backdrop-blur-sm opacity-0 group-hover/images:opacity-100 transition-opacity pointer-events-none">
+                            {recipe.additional_images.length + 1} IMAGES • SCROLL
                           </div>
                         )}
                         <div className="absolute top-2 right-2 flex gap-2">
@@ -2784,25 +2803,21 @@ function RecipeViewer({ recipe, onClose, scaleIngredient, convertUnits, unitSyst
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
             <div className="lg:col-span-1 space-y-8">
               <div className="space-y-4">
+              <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 scrollbar-thin">
                 {recipe.image_data && (
-                  <div className="aspect-square rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800">
-                    <img src={recipe.image_data} className="w-full h-full object-cover" alt={recipe.name} />
+                  <div className="rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800 shadow-sm bg-stone-50 dark:bg-stone-800">
+                    <img src={recipe.image_data} className="w-full h-auto" alt={recipe.name} />
                   </div>
                 )}
                 
                 {recipe.additional_images && recipe.additional_images.length > 0 && (
-                  <div className="grid grid-cols-4 gap-2">
-                    {recipe.additional_images.map((img, i) => (
-                      <div key={i} className="aspect-square rounded-lg overflow-hidden border border-stone-100 dark:border-stone-800 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => {
-                        // Swap main image with this one (simple implementation)
-                        const mainImg = document.querySelector('.lg\\:col-span-1 img') as HTMLImageElement;
-                        if (mainImg) mainImg.src = img.image_data;
-                      }}>
-                        <img src={img.image_data} className="w-full h-full object-cover" alt={`Page ${i + 2}`} />
-                      </div>
-                    ))}
-                  </div>
+                  recipe.additional_images.map((img, i) => (
+                    <div key={i} className="rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-800 shadow-sm bg-stone-50 dark:bg-stone-800">
+                      <img src={img.image_data} className="w-full h-auto" alt={`Page ${i + 2}`} />
+                    </div>
+                  ))
                 )}
+              </div>
               </div>
 
               <div className="space-y-6 bg-stone-50 dark:bg-stone-800/50 p-6 rounded-3xl">
