@@ -280,14 +280,24 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
   app.set('trust proxy', 1);
+  
+  const sessionStore = new SQLiteStore({ db: "sessions.db", dir: dataDir });
+
   app.use((req, res, next) => {
-    // Force https for session cookie security in the AI Studio iframe environment
-    req.headers['x-forwarded-proto'] = 'https';
+    const host = req.headers.host || '';
+    // AI Studio previews are served from *.run.app
+    const isAiStudio = host.includes('.run.app');
+    
+    if (isAiStudio && !req.headers['x-forwarded-proto']) {
+      req.headers['x-forwarded-proto'] = 'https';
+    }
     
     const proto = req.headers['x-forwarded-proto'] || req.protocol;
+    const isSecure = proto === 'https' || req.secure;
+    
     console.log(`[DEBUG] Request: ${req.method} ${req.path}`);
-    console.log(`[DEBUG] Protocol: ${proto}, Secure: ${req.secure}, Host: ${req.headers.host}`);
-    console.log(`[DEBUG] Derived Secure: ${req.secure}`);
+    console.log(`[DEBUG] Protocol: ${proto}, Secure: ${req.secure}, Host: ${host}`);
+    console.log(`[DEBUG] Derived Secure: ${isSecure}`);
     
     const oldWriteHead = res.writeHead;
     res.writeHead = function(statusCode: number, ...args: any[]) {
@@ -297,23 +307,24 @@ async function startServer() {
       }
       return oldWriteHead.apply(this, [statusCode, ...args]);
     };
-    next();
-  });
 
-  app.use(session({
-    store: new SQLiteStore({ db: "sessions.db", dir: dataDir }) as any,
-    secret: process.env.SESSION_SECRET || "recipe-digitizer-secret",
-    resave: false,
-    saveUninitialized: false,
-    rolling: true,
-    name: 'recipe_session',
-    cookie: { 
-      secure: true,
-      httpOnly: true,
-      sameSite: 'none',
-      maxAge: 24 * 60 * 60 * 1000
-    }
-  }));
+    // Initialize session with dynamic cookie settings
+    session({
+      store: sessionStore as any,
+      secret: process.env.SESSION_SECRET || "recipe-digitizer-secret",
+      resave: false,
+      saveUninitialized: false,
+      rolling: true,
+      name: 'recipe_session',
+      proxy: true,
+      cookie: { 
+        secure: isSecure,
+        httpOnly: true,
+        sameSite: isSecure ? 'none' : 'lax',
+        maxAge: 24 * 60 * 60 * 1000
+      }
+    })(req, res, next);
+  });
 
   // Auth Middleware
   const isAuthenticated = (req: any, res: any, next: any) => {
