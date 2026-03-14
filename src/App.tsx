@@ -43,7 +43,12 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { extractRecipeFromImage, extractRecipeFromUrl, RecipeData } from "./services/gemini";
 
-const randomUUID = () => crypto.randomUUID();
+const randomUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+};
 
 interface UserProfile {
   id: string;
@@ -451,19 +456,29 @@ export default function App() {
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
     
-    const newUploads: PendingUpload[] = Array.from(files)
-      .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf')
-      .map(file => ({
-        id: randomUUID(),
-        files: [{
-          file,
-          preview: URL.createObjectURL(file)
-        }],
-        status: 'pending'
-      }));
+    try {
+      const newUploads: PendingUpload[] = Array.from(files)
+        .filter(file => file.type.startsWith('image/') || file.type === 'application/pdf')
+        .map(file => ({
+          id: randomUUID(),
+          files: [{
+            file,
+            preview: URL.createObjectURL(file)
+          }],
+          status: 'pending'
+        }));
 
-    setPendingUploads(prev => [...prev, ...newUploads]);
-    setActiveTab('upload');
+      if (newUploads.length === 0) {
+        showToast("No valid images or PDFs found in selection", "error");
+        return;
+      }
+
+      setPendingUploads(prev => [...prev, ...newUploads]);
+      setActiveTab('upload');
+    } catch (err: any) {
+      console.error("Error handling files:", err);
+      showToast("Failed to process selected files", "error");
+    }
   };
 
   const addPageToUpload = (index: number, files: FileList | null) => {
