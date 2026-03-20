@@ -922,29 +922,56 @@ export default function App() {
                           const text = await file.text();
                           try {
                             const mealieData = JSON.parse(text);
-                            // Handle both single recipe and array of recipes
-                            const recipes = Array.isArray(mealieData) ? mealieData : [mealieData];
+                            if (!mealieData) throw new Error("Empty data");
                             
-                            const newUploads: PendingUpload[] = recipes.map(r => {
-                              const imageUrl = typeof r.image === 'string' ? r.image : '';
-                              return {
-                                id: randomUUID(),
-                                files: imageUrl ? [{ file: new File([], 'image.jpg', { type: 'image/jpeg' }), preview: imageUrl }] : [],
-                                status: 'completed',
-                                data: {
-                                  name: r.name || r.title || "Imported Recipe",
-                                  description: r.description || "",
-                                  ingredients: (r.recipeIngredient || r.ingredients || []).map((i: any) => typeof i === 'string' ? i : (i.note || i.text || "")),
-                                  instructions: (r.recipeInstructions || r.instructions || []).map((i: any) => typeof i === 'string' ? i : (i.text || i.note || "")),
-                                  tags: r.tags || [],
-                                  servings: r.recipeYield || r.servings || 1
-                                }
-                              };
-                            });
+                            // Handle both single recipe, array of recipes, and Mealie backup object
+                            let recipes: any[] = [];
+                            if (Array.isArray(mealieData)) {
+                              recipes = mealieData;
+                            } else if (mealieData.recipes && Array.isArray(mealieData.recipes)) {
+                              recipes = mealieData.recipes;
+                            } else {
+                              recipes = [mealieData];
+                            }
+                            
+                            const newUploads: PendingUpload[] = recipes
+                              .filter(r => r && typeof r === 'object')
+                              .map(r => {
+                                const imageUrl = typeof r.image === 'string' ? r.image : '';
+                                
+                                // Ensure ingredients and instructions are arrays
+                                const rawIngredients = r.recipeIngredient || r.ingredients || [];
+                                const rawInstructions = r.recipeInstructions || r.instructions || [];
+                                
+                                return {
+                                  id: randomUUID(),
+                                  files: imageUrl ? [{ file: new File([], 'image.jpg', { type: 'image/jpeg' }), preview: imageUrl }] : [],
+                                  status: 'completed',
+                                  data: {
+                                    name: r.name || r.title || "Imported Recipe",
+                                    description: r.description || "",
+                                    ingredients: Array.isArray(rawIngredients) 
+                                      ? rawIngredients.map((i: any) => typeof i === 'string' ? i : (i.note || i.text || ""))
+                                      : [],
+                                    instructions: Array.isArray(rawInstructions)
+                                      ? rawInstructions.map((i: any) => typeof i === 'string' ? i : (i.text || i.note || ""))
+                                      : [],
+                                    tags: Array.isArray(r.tags) ? r.tags : [],
+                                    servings: r.recipeYield || r.servings || 1
+                                  }
+                                };
+                              });
+                            
+                            if (newUploads.length === 0) {
+                              showToast("No valid recipes found in JSON", "error");
+                              return;
+                            }
+                            
                             setPendingUploads(prev => [...prev, ...newUploads]);
-                            showToast(`Imported ${newUploads.length} recipes from Mealie`);
+                            showToast(`Imported ${newUploads.length} recipes`);
                           } catch (err) {
-                            showToast("Failed to parse Mealie JSON", "error");
+                            console.error("Mealie import error:", err);
+                            showToast("Failed to parse JSON backup", "error");
                           }
                         };
                         input.click();
@@ -978,6 +1005,11 @@ export default function App() {
                   </div>
                   <input type="file" ref={fileInputRef} className="hidden" multiple accept="image/*,application/pdf" onChange={(e) => handleFiles(e.target.files)} />
                   <input type="file" ref={folderInputRef} className="hidden" {...{webkitdirectory: "", directory: ""} as any} onChange={(e) => handleFiles(e.target.files)} />
+                </div>
+              ) : !pendingUploads[currentIndex] ? (
+                <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-stone-900 rounded-3xl border border-stone-200 dark:border-stone-800">
+                  <Loader2 className="animate-spin text-emerald-600 mb-4" size={32} />
+                  <p className="text-stone-500">Preparing recipe editor...</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
