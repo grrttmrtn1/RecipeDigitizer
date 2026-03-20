@@ -546,6 +546,7 @@ export default function App() {
         data
       };
       setPendingUploads(prev => [...prev, newUpload]);
+      setCurrentIndex(pendingUploads.length); // Switch to the new upload
       setScrapeUrl('');
       showToast("Recipe scraped successfully!");
     } catch (err: any) {
@@ -919,19 +920,22 @@ export default function App() {
                             // Handle both single recipe and array of recipes
                             const recipes = Array.isArray(mealieData) ? mealieData : [mealieData];
                             
-                            const newUploads: PendingUpload[] = recipes.map(r => ({
-                              id: randomUUID(),
-                              files: [],
-                              status: 'completed',
-                              data: {
-                                name: r.name || r.title || "Imported Recipe",
-                                description: r.description || "",
-                                ingredients: (r.recipeIngredient || r.ingredients || []).map((i: any) => typeof i === 'string' ? i : (i.note || i.text || "")),
-                                instructions: (r.recipeInstructions || r.instructions || []).map((i: any) => typeof i === 'string' ? i : (i.text || i.note || "")),
-                                tags: r.tags || [],
-                                servings: r.recipeYield || r.servings || 1
-                              }
-                            }));
+                            const newUploads: PendingUpload[] = recipes.map(r => {
+                              const imageUrl = typeof r.image === 'string' ? r.image : '';
+                              return {
+                                id: randomUUID(),
+                                files: imageUrl ? [{ file: new File([], 'image.jpg', { type: 'image/jpeg' }), preview: imageUrl }] : [],
+                                status: 'completed',
+                                data: {
+                                  name: r.name || r.title || "Imported Recipe",
+                                  description: r.description || "",
+                                  ingredients: (r.recipeIngredient || r.ingredients || []).map((i: any) => typeof i === 'string' ? i : (i.note || i.text || "")),
+                                  instructions: (r.recipeInstructions || r.instructions || []).map((i: any) => typeof i === 'string' ? i : (i.text || i.note || "")),
+                                  tags: r.tags || [],
+                                  servings: r.recipeYield || r.servings || 1
+                                }
+                              };
+                            });
                             setPendingUploads(prev => [...prev, ...newUploads]);
                             showToast(`Imported ${newUploads.length} recipes from Mealie`);
                           } catch (err) {
@@ -976,7 +980,13 @@ export default function App() {
                   <div className="space-y-4">
                     <div className="bg-white p-4 rounded-3xl border border-stone-200 shadow-sm relative overflow-hidden aspect-[4/3]">
                       <div className="w-full h-full overflow-y-auto pr-2 scrollbar-thin">
-                        {pendingUploads[currentIndex].files[0].file.type === 'application/pdf' ? (
+                        {pendingUploads[currentIndex].files.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-stone-400">
+                            <Download size={64} className="opacity-20" />
+                            <p className="mt-4 font-medium">Imported from Mealie</p>
+                            <p className="text-xs mt-1">No preview image available</p>
+                          </div>
+                        ) : pendingUploads[currentIndex].files[0].file.type === 'application/pdf' ? (
                           <div className="h-full flex flex-col items-center justify-center text-stone-400">
                             <FileText size={64} />
                             <p className="mt-2 font-medium">{pendingUploads[currentIndex].files[0].file.name}</p>
@@ -1058,12 +1068,16 @@ export default function App() {
                           onClick={() => setCurrentIndex(i)}
                           className={`flex-shrink-0 w-16 h-16 rounded-xl border-2 transition-all overflow-hidden relative ${currentIndex === i ? 'border-emerald-500 scale-105' : 'border-transparent opacity-60'}`}
                         >
-                          {u.files[0].file.type === 'application/pdf' ? (
+                          {u.files.length > 0 && u.files[0].file.type === 'application/pdf' ? (
                             <div className="w-full h-full bg-stone-100 flex items-center justify-center text-stone-400">
                               <FileText size={20} />
                             </div>
-                          ) : (
+                          ) : u.files.length > 0 ? (
                             <img src={u.files[0].preview} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-stone-100 flex items-center justify-center text-stone-400">
+                              <Download size={20} className="opacity-30" />
+                            </div>
                           )}
                           {u.files.length > 1 && (
                             <div className="absolute top-0 right-0 bg-emerald-600 text-white w-5 h-5 flex items-center justify-center text-[10px] font-bold">
