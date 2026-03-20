@@ -41,7 +41,7 @@ import {
   Timer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { extractRecipeFromImage, extractRecipeFromUrl, RecipeData } from "./services/gemini";
+import { extractRecipeFromImage, extractRecipeFromUrl, type RecipeData } from "./services/gemini";
 
 const randomUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -115,9 +115,14 @@ export default function App() {
   
   // New Features State
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('theme') === 'dark' || 
-        (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const saved = localStorage.getItem('theme');
+        if (saved) return saved === 'dark';
+        return window.matchMedia?.('(prefers-color-scheme: dark)').matches || false;
+      }
+    } catch (e) {
+      console.error("Error accessing localStorage:", e);
     }
     return false;
   });
